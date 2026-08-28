@@ -386,7 +386,10 @@ def test_validator_rejects_invalid_asset_scenario_id(tmp_path: Path):
 
 
 def test_validator_reports_symlink_without_following_it(tmp_path: Path):
-    outside = tmp_path / "outside.txt"
+    # Keep the symlink target outside the validated root.  The assertion is
+    # about refusing to follow the link; a regular secret file inside the root
+    # should still be scanned when it is independently present there.
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
     write(outside, "DEEPSEEK_API_KEY=" + "x" * 40)
     linked = tmp_path / "linked.txt"
     try:
@@ -394,7 +397,10 @@ def test_validator_reports_symlink_without_following_it(tmp_path: Path):
     except (OSError, NotImplementedError):
         pytest.skip("symlinks unavailable on this host")
 
-    findings = validate_public_release(tmp_path, include_history=False)
+    try:
+        findings = validate_public_release(tmp_path, include_history=False)
+    finally:
+        outside.unlink(missing_ok=True)
 
     assert any(
         item.kind == "blocked_path" and item.path == "linked.txt" for item in findings
@@ -669,3 +675,4 @@ def test_non_history_reports_unreadable_git_metadata(tmp_path: Path, monkeypatch
     assert findings == (
         Finding("unreadable", ".git", "Git repository cannot be inspected"),
     )
+

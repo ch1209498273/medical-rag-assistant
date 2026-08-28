@@ -547,6 +547,8 @@ def test_stop_launcher_skips_unverified_pid_without_killing_current_process():
 
 
 def test_cloud_launcher_checks_configuration_from_arbitrary_cwd():
+    if os.name != "nt":
+        pytest.skip("the PowerShell launcher is a Windows-only local entrypoint")
     shell = shutil.which("pwsh") or shutil.which("powershell")
     if shell is None:
         pytest.skip("PowerShell is unavailable")
@@ -616,3 +618,4 @@ def _remove_reparse_path(path: Path) -> None:
         )
         return
     path.unlink(missing_ok=True)
+

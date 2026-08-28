@@ -12,7 +12,7 @@ import os
 import re
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 MAX_TEXT_BYTES = 1_000_000
 BLOCKED_PATH_PARTS = frozenset(
@@ -222,6 +222,15 @@ def _relative_candidate(root: Path, candidate: Path) -> tuple[Path | None, Path 
     """Resolve a candidate lexically, never following it for display purposes."""
 
     root_absolute = root.absolute()
+    # ``Path.is_absolute`` follows the host platform's rules.  A repository
+    # checked out on Linux can still receive a Windows-style candidate from a
+    # cross-platform caller, so reject drive-rooted and UNC paths before
+    # joining them to the local root.  Otherwise a Windows
+    # path would be misclassified as a harmless relative filename.
+    candidate_text = str(candidate)
+    windows_candidate = PureWindowsPath(candidate_text)
+    if windows_candidate.drive or windows_candidate.root:
+        return None, None
     candidate_path = candidate if candidate.is_absolute() else root_absolute / candidate
     candidate_path = Path(os.path.normpath(str(candidate_path)))
     try:
@@ -554,3 +563,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

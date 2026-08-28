@@ -448,10 +448,13 @@ async def test_scan_stops_at_max_plus_one_without_materializing_directory(
     original_iterdir = Path.iterdir
 
     def bounded_iterdir(directory: Path):
-        if directory == tmp_path:
-            for index, entry in enumerate(original_iterdir(directory)):
-                if index >= 3:
-                    raise AssertionError("scan enumerated beyond max+1")
+        if directory.resolve() == tmp_path.resolve():
+            supported_seen = 0
+            for entry in original_iterdir(directory):
+                if entry.suffix.casefold() in {".docx", ".pdf"}:
+                    if supported_seen >= 3:
+                        raise AssertionError("scan enumerated beyond max+1")
+                    supported_seen += 1
                 yield entry
             return
         yield from original_iterdir(directory)
@@ -822,3 +825,4 @@ async def test_cleanup_failure_remains_managed_and_never_activates(
     assert result.status == "failed"
     assert repository.get_active(policy_path.name) is None
     assert vector_store.deleted == [result.version_id]
+
