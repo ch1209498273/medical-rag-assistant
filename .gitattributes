@@ -1,0 +1,5 @@
+# Generated public demo containers are binary artifacts, not text diffs.
+*.docx -diff
+*.gif -diff
+*.pdf -diff
+*.png -diff

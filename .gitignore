@@ -1,0 +1,27 @@
+.worktrees/
+
+# Local configuration and provider credentials
+.env
+.env.*
+!.env.example
+
+# Source documents and derived/private runtime data
+资料/
+data/private/
+data/processed/
+data/qdrant/
+data/*.db
+data/*.sqlite*
+data/runtime/
+logs/
+/release/
+
+# Python, frontend, and test artifacts
+backend/.venv/
+*.egg-info/
+**/__pycache__/
+.pytest_cache/
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+*.pyc

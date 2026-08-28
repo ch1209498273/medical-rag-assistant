@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "scenarios": [
+    {
+      "scenario_id": "training-hours",
+      "type": "fact",
+      "question": "新员工独立值班前需要完成多少学时岗前培训？",
+      "standalone_question": "新员工独立值班前需要完成多少学时岗前培训？",
+      "answer": "新员工独立值班前需要完成8学时岗前培训。",
+      "refused": false,
+      "evidence_terms": ["8学时", "独立值班前"]
+    },
+    {
+      "scenario_id": "pre-dialysis-checks",
+      "type": "procedure",
+      "question": "透析开始前需要完成哪些身份核对和设备检查？",
+      "standalone_question": "透析开始前需要完成哪些身份核对和设备检查？",
+      "answer": "应使用姓名和出生日期两个标识，由两名工作人员交叉核对，并完成设备自检和报警测试；禁止跳过自检。",
+      "refused": false,
+      "evidence_terms": ["姓名和出生日期", "两名工作人员", "设备自检", "报警测试"]
+    },
+    {
+      "scenario_id": "training-pass-conditions",
+      "type": "condition",
+      "question": "岗前培训达到什么条件才可以独立值班？",
+      "standalone_question": "岗前培训达到什么条件才可以独立值班？",
+      "answer": "独立值班前应完成8学时培训，出勤率不少于90%，并取得不少于80分的考核成绩。",
+      "refused": false,
+      "evidence_terms": ["出勤率不少于90%", "考核不少于80分", "独立值班前"]
+    },
+    {
+      "scenario_id": "self-check-prohibition",
+      "type": "prohibition",
+      "question": "设备自检可以跳过吗？",
+      "standalone_question": "设备自检可以跳过吗？",
+      "answer": "不可以。开始前必须完成设备自检和报警测试，制度明确禁止跳过自检。",
+      "refused": false,
+      "evidence_terms": ["禁止跳过自检", "设备自检", "报警测试"]
+    },
+    {
+      "scenario_id": "training-and-learning-synthesis",
+      "type": "synthesis",
+      "question": "如何同时满足岗前培训和年度学习积分要求？",
+      "standalone_question": "如何同时满足岗前培训和年度学习积分要求？",
+      "answer": "岗前阶段完成8学时培训、出勤率不少于90%并取得不少于80分；年度学习积分不少于24分，其中专业培训不少于16分、应急演练不少于4分，活动后5个工作日内登记，不足时完成补修。",
+      "refused": false,
+      "evidence_terms": ["8学时", "年度学习积分不少于24分", "专业培训不少于16分", "应急演练不少于4分"]
+    },
+    {
+      "scenario_id": "reimbursement-unsupported",
+      "type": "no_answer",
+      "question": "血液透析费用报销比例是多少？",
+      "standalone_question": "血液透析费用报销比例是多少？",
+      "answer": "",
+      "refused": true,
+      "evidence_terms": ["报销比例"]
+    },
+    {
+      "scenario_id": "failed-training-followup",
+      "type": "followup",
+      "question": "那没通过怎么办？",
+      "standalone_question": "新员工岗前培训考核未通过后如何处理？",
+      "answer": "考核未通过者应在7日内完成补训。",
+      "refused": false,
+      "evidence_terms": ["未通过者7日内补训", "考核未通过"]
+    }
+  ]
+}

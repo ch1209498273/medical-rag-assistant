@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "assets": [
+    {
+      "file": "chat-answer.png",
+      "scenario_id": "fact-training-hours",
+      "sha256": "4d5f87baaba21ebdf47acc729852cc78fd78eb474510eab53f5ac8ae482ccc38",
+      "width": 1440,
+      "height": 900,
+      "reviewed": true
+    },
+    {
+      "file": "chat-refusal.png",
+      "scenario_id": "no-answer-reimbursement",
+      "sha256": "e5b07c7ec4ca27ea862d7753a0be29380c9c17f578ab2f1ffe9d5fa729a91bf2",
+      "width": 1440,
+      "height": 900,
+      "reviewed": true
+    },
+    {
+      "file": "chat-history.png",
+      "scenario_id": "followup-history-restore",
+      "sha256": "4f784c4b7b530c0d0b5ebecffae2c3c0d95f057181b780bfada68d632afbf964",
+      "width": 1440,
+      "height": 900,
+      "reviewed": true
+    },
+    {
+      "file": "documents.png",
+      "scenario_id": "document-list",
+      "sha256": "92bd5f02bd40a4726c72baf0d2063b7b1285f02dd24cca40bd294651018dc5c3",
+      "width": 1440,
+      "height": 900,
+      "reviewed": true
+    },
+    {
+      "file": "runtime-mode.png",
+      "scenario_id": "runtime-mode-demo",
+      "sha256": "3694a5e7e915d3fee7704da8b4368948569ec207a54a6944b59d90ef98ac7f5a",
+      "width": 1440,
+      "height": 900,
+      "reviewed": true
+    },
+    {
+      "file": "question-flow.gif",
+      "scenario_id": "question-flow",
+      "sha256": "28d433c4698d396e10c8a09e461aa52878e451108a222a58d97ad739d63667e7",
+      "width": 1440,
+      "height": 900,
+      "reviewed": true
+    }
+  ]
+}
