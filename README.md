@@ -1,16 +1,20 @@
 # 医疗知识问答助手
 
+> **证据约束的医疗知识 RAG 参考实现**：让医护培训资料的问答结果可定位、可拒答、可复现。
+
 > Medical Knowledge Q&A Assistant — a local-first, evidence-grounded RAG portfolio project.
 
-> **边界提醒：** 这是一个面向本机演示和工程学习的作品集项目。公开 Demo 使用完全虚构的资料，不代表真实医疗制度、医保规则或诊疗建议；它不是公网服务，也不替代专业人员判断。
+**公开发布原则：** 本仓库提供可复验的公开作品集；远程仓库、CI、Git tag 和 GitHub Release 状态均须逐项核验。详见[发布证据与远程发布门](docs/release-evidence.md)。
 
-**当前状态：** `v1.0.0` 本地作品集基线，公开仓库和 GitHub 发布仍需独立导出与发布门验证。
+> **边界提醒：** 这是一个面向本机演示和工程学习的作品集项目。公开 Demo 使用完全虚构的资料，不代表真实医疗制度、医保规则或诊疗建议；它不是公网服务，也不替代专业人员判断。
 
 ## 30秒了解项目
 
 一个可扩展的医疗知识问答助手。当前 v1.0 聚焦血透机构医护人员的制度与专业知识检索，采用可追溯引用、证据不足拒答和本地知识库存储；患者端和运行时多 Agent 属于 v2.0 路线。
 
 它把 PDF/DOCX 资料变成可定位的 Chunk，经过 Embedding、向量召回、Reranker 和相关性门后，再生成带引用的结构化答案。系统同时提供一个无需 Key、无需网络的确定性 Demo，以及由运行者自备 Key 的显式 Cloud 模式。
+
+30 秒了解项目：它展示的不是“让模型随便回答”，而是如何把资料版本、检索、证据引用、安全拒答、评测回滚和公开数据边界放在同一条可验证工程链路里。
 
 技术栈：Python 3.12、FastAPI、Pydantic Settings、SQLite、Qdrant Local、PyMuPDF、python-docx、React 19、TypeScript、Vite、Vitest、DeepSeek 和 SiliconFlow。
 
@@ -201,10 +205,12 @@ C2 说明提示词实验的取舍：它减少了可回答问题的过度拒答�
 
 ## 工程质量
 
+**工程亮点：** 用确定性 Demo 把“可复现”与“可选云端路径”拆开；用整条答案缓冲和引用集合校验把“有文本”与“有证据”拆开；用冻结评测和回滚记录把“回答更多”与“安全边界更好”拆开。
+
 - 后端、前端、Demo Provider、SSE、会话和安全边界均有自动测试；每个任务遵循 RED → GREEN → 回归；
 - 文档合同测试会检查本 README 的精确章节顺序、所有公开 Markdown 相对链接、Demo/Cloud 边界、凭据/路径、Provider 兼容性以及“生产级/运行时多 Agent”越界叙述；
-- `scripts/security_scan.py` 只应作为工作树和独立公开副本的内容门之一，源开发仓库可能包含私有过程资产，不能把源仓库扫描结果冒充公开发布通过；
-- 本 Task 最终 fresh run 的文档合同计数为 `12 passed`（命令：`backend\\.venv\\Scripts\\python.exe -m pytest -q backend/tests/release/test_public_docs.py`）；后端/前端全量计数留给独立公开副本的最终发布门，避免把旧运行计数包装成当前证据。
+- `scripts/security_scan.py` 以私有开发工作树的 fail-closed 规则处理二进制资料；独立公开副本的安全发布门是 `scripts/validate_public_release.py`，它能核验允许的虚构 Demo 资产与历史边界，不能把源仓库扫描结果冒充公开发布通过；
+- 文档合同可通过 `backend\\.venv\\Scripts\\python.exe -m pytest -q backend/tests/release/test_public_docs.py` 复核；后端/前端全量计数、Demo smoke 和历史扫描均在独立公开副本的最终发布门重新生成，避免把旧运行计数包装成当前证据。
 
 ## 多 Agent 开发
 
@@ -233,7 +239,7 @@ v1 选择 SQLite + Qdrant Local，换取本机可复现、低运维和不依赖�
 - Demo 的 OCR 不伪造图片识别结果；Cloud OCR/模型调用需要运行者自己的 Key、网络和费用；
 - 引用门证明来源结构和定位，不等于模型答案在语义上或医学上正确；公开 Demo 不提供临床决策支持；
 - MySQL、Qdrant Server、运行时多 Agent、多知识域和完整人工评测属于 v2.0；
-- 当前尚未创建或推送 GitHub 公开仓库，也没有把 CI 徽章当作已通过证据。
+- 远程仓库、CI、Git tag 和 GitHub Release 的状态必须逐项核验；本地专业化整理完成前，不把任何远程状态或徽章写成既成事实。
 
 ## v2.0 路线
 

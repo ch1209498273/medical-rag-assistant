@@ -11,11 +11,13 @@ class PublicReleaseManifest:
 
     files: tuple[str, ...]
     directories: tuple[str, ...]
+    excluded_files: tuple[str, ...] = ()
 
 
 PUBLIC_RELEASE_MANIFEST = PublicReleaseManifest(
     files=(
         "README.md",
+        "CHANGELOG.md",
         "LICENSE",
         "SECURITY.md",
         "ROADMAP.md",
@@ -30,6 +32,7 @@ PUBLIC_RELEASE_MANIFEST = PublicReleaseManifest(
         "frontend/vite.config.ts",
         "demo/questions.json",
         ".github/workflows/ci.yml",
+        ".github/PULL_REQUEST_TEMPLATE.md",
         "scripts/__init__.py",
         "scripts/build_demo_documents.py",
         "scripts/demo_smoke.py",
@@ -46,6 +49,7 @@ PUBLIC_RELEASE_MANIFEST = PublicReleaseManifest(
         "docs/multi-agent-development.md",
         "docs/project-case-study.md",
         "docs/demo-guide.md",
+        "docs/release-evidence.md",
     ),
     directories=(
         "backend/app",
@@ -54,5 +58,8 @@ PUBLIC_RELEASE_MANIFEST = PublicReleaseManifest(
         "demo/sources",
         "demo/documents",
         "docs/assets",
+    ),
+    excluded_files=(
+        "backend/tests/evaluation/test_task9f_semantic_script.py",
     ),
 )

@@ -256,22 +256,33 @@ def _validate_manifest_path(value: object, category: str) -> Path:
 
 def _normalise_manifest(
     manifest: PublicReleaseManifest,
-) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+) -> tuple[tuple[Path, ...], tuple[Path, ...], tuple[Path, ...]]:
     """Validate manifest syntax, duplicates, and file/directory overlaps."""
 
     try:
         raw_files = tuple(manifest.files)
         raw_directories = tuple(manifest.directories)
+        raw_excluded_files = tuple(manifest.excluded_files)
     except (AttributeError, TypeError) as exc:
-        raise PublicReleaseError("manifest must define files and directories") from exc
+        raise PublicReleaseError(
+            "manifest must define files, directories, and excluded files"
+        ) from exc
 
     files = tuple(_validate_manifest_path(value, "file") for value in raw_files)
     directories = tuple(
         _validate_manifest_path(value, "directory") for value in raw_directories
     )
+    excluded_files = tuple(
+        _validate_manifest_path(value, "excluded file")
+        for value in raw_excluded_files
+    )
 
     seen: dict[tuple[str, ...], str] = {}
-    for category, entries in (("file", files), ("directory", directories)):
+    for category, entries in (
+        ("file", files),
+        ("directory", directories),
+        ("excluded file", excluded_files),
+    ):
         for entry in entries:
             key = _path_key(entry)
             if key in seen:
@@ -307,7 +318,19 @@ def _normalise_manifest(
                     "manifest file paths overlap: "
                     f"{first.as_posix()} and {second.as_posix()}"
                 )
-    return files, directories
+
+    for excluded_file in excluded_files:
+        excluded_key = _path_key(excluded_file)
+        if not any(
+            excluded_key[: len(_path_key(directory))] == _path_key(directory)
+            and excluded_key != _path_key(directory)
+            for directory in directories
+        ):
+            raise PublicReleaseError(
+                "excluded file must be inside an allowed manifest directory: "
+                f"{excluded_file.as_posix()}"
+            )
+    return files, directories, excluded_files
 
 
 def _validate_output_root(output_root: Path) -> Path:
@@ -398,6 +421,7 @@ def _collect_directory(
     source_directory: Path,
     relative_directory: Path,
     output_root: Path,
+    excluded_file_keys: set[tuple[str, ...]],
     directory_items: dict[tuple[str, ...], tuple[Path, Path]],
     file_items: dict[tuple[str, ...], tuple[Path, Path]],
 ) -> None:
@@ -424,6 +448,8 @@ def _collect_directory(
     for child in children:
         relative_child = relative_directory / child.name
         if _is_same_or_descendant(child, output_root):
+            continue
+        if _path_key(relative_child) in excluded_file_keys:
             continue
         if _is_link_or_reparse(child):
             raise PublicReleaseError(
@@ -454,6 +480,7 @@ def _collect_directory(
                 child,
                 relative_child,
                 output_root,
+                excluded_file_keys,
                 directory_items,
                 file_items,
             )
@@ -489,6 +516,7 @@ def _collect_copy_plan(
     output_root: Path,
     files: tuple[Path, ...],
     directories: tuple[Path, ...],
+    excluded_files: tuple[Path, ...],
 ) -> tuple[tuple[tuple[Path, Path], ...], tuple[tuple[Path, Path], ...]]:
     directory_items: dict[tuple[str, ...], tuple[Path, Path]] = {}
     file_items: dict[tuple[str, ...], tuple[Path, Path]] = {}
@@ -500,6 +528,24 @@ def _collect_copy_plan(
         file_key = _path_key(relative_file)
         file_items[file_key] = (source_file, relative_file)
 
+    excluded_file_keys: set[tuple[str, ...]] = set()
+    for excluded_file in excluded_files:
+        candidate = source_root.joinpath(*excluded_file.parts)
+        if _is_link_or_reparse(candidate):
+            raise PublicReleaseError(
+                "excluded file contains a symlink or reparse point: "
+                f"{excluded_file.as_posix()}"
+            )
+        try:
+            exists = candidate.exists()
+        except OSError as exc:
+            raise PublicReleaseError(
+                "unable to inspect excluded file: " f"{excluded_file.as_posix()}"
+            ) from exc
+        if exists:
+            _resolve_source_entry(source_root, excluded_file, "file", output_root)
+        excluded_file_keys.add(_path_key(excluded_file))
+
     for relative_directory in directories:
         source_directory = _resolve_source_entry(
             source_root, relative_directory, "directory", output_root
@@ -509,6 +555,7 @@ def _collect_copy_plan(
             source_directory,
             relative_directory,
             output_root,
+            excluded_file_keys,
             directory_items,
             file_items,
         )
@@ -605,7 +652,7 @@ def prepare_public_release(
         raise PublicReleaseError("source and output roots must be paths") from exc
 
     output = _validate_output_root(output_candidate)
-    files, directories = _normalise_manifest(manifest)
+    files, directories, excluded_files = _normalise_manifest(manifest)
     source = _resolve_source_root(source_candidate)
 
     if output == source:
@@ -621,6 +668,7 @@ def prepare_public_release(
         output,
         files,
         directories,
+        excluded_files,
     )
     _ensure_output_directory(output)
     return _copy_plan(output, planned_directories, planned_files)

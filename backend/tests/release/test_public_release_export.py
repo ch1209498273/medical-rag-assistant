@@ -23,6 +23,75 @@ def test_export_copies_only_manifest_entries(tmp_path: Path) -> None:
     assert not (output / ".env").exists()
 
 
+def test_export_excludes_an_explicit_private_file_from_an_allowed_directory(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    output = tmp_path / "public"
+    safe = source / "backend" / "tests" / "test_public.py"
+    private = source / "backend" / "tests" / "test_private_runner.py"
+    safe.parent.mkdir(parents=True)
+    safe.write_text("safe", encoding="utf-8")
+    private.write_text("private runner", encoding="utf-8")
+
+    copied = prepare_public_release(
+        source,
+        output,
+        PublicReleaseManifest(
+            files=(),
+            directories=("backend",),
+            excluded_files=("backend/tests/test_private_runner.py",),
+        ),
+    )
+
+    assert output / "backend" / "tests" / "test_public.py" in copied
+    assert not (output / "backend" / "tests" / "test_private_runner.py").exists()
+
+
+def test_export_rejects_an_exclusion_outside_an_allowed_directory(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    output = tmp_path / "public"
+    source.mkdir()
+    (source / "allowed").mkdir()
+    (source / "allowed" / "safe.txt").write_text("safe", encoding="utf-8")
+    (source / "other.txt").write_text("private", encoding="utf-8")
+
+    with pytest.raises(PublicReleaseError, match="excluded file"):
+        prepare_public_release(
+            source,
+            output,
+            PublicReleaseManifest(
+                files=(),
+                directories=("allowed",),
+                excluded_files=("other.txt",),
+            ),
+        )
+
+    assert not output.exists()
+
+
+def test_export_allows_an_absent_exclusion_in_a_reexported_public_tree(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    output = tmp_path / "public"
+    safe = source / "backend" / "tests" / "test_public.py"
+    safe.parent.mkdir(parents=True)
+    safe.write_text("safe", encoding="utf-8")
+
+    copied = prepare_public_release(
+        source,
+        output,
+        PublicReleaseManifest(
+            files=(),
+            directories=("backend",),
+            excluded_files=("backend/tests/test_private_runner.py",),
+        ),
+    )
+
+    assert output / "backend" / "tests" / "test_public.py" in copied
+
+
 def test_export_refuses_nonempty_output(tmp_path: Path) -> None:
     output = tmp_path / "public"
     output.mkdir()

@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from scripts.public_release_manifest import PUBLIC_RELEASE_MANIFEST
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 README = PROJECT_ROOT / "README.md"
 PUBLIC_DOCS = (
@@ -282,6 +284,33 @@ def test_readme_follows_the_approved_top_level_heading_sequence():
     assert _readme_top_level_headings(text) == EXPECTED_README_HEADINGS
 
 
+def test_public_readme_leads_with_reference_implementation_not_demo_only():
+    readme = README.read_text(encoding="utf-8")
+
+    assert "证据约束的医疗知识 RAG 参考实现" in readme
+    assert "30 秒了解项目" in readme
+    assert "工程亮点" in readme
+
+
+def test_release_evidence_does_not_claim_an_unverified_tag_or_remote_release():
+    evidence = (PROJECT_ROOT / "docs" / "release-evidence.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "远程状态需在发布前核验" in evidence
+    assert "未创建或推送 Git tag" in evidence
+
+
+def test_release_evidence_names_the_public_validator_as_the_release_security_gate():
+    evidence = (PROJECT_ROOT / "docs" / "release-evidence.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "`validate_public_release.py`" in evidence
+    assert "通用 `security_scan.py`" in evidence
+    assert "不作为公开副本的通过结论" in evidence
+
+
 def test_all_public_markdown_relative_links_resolve():
     broken: list[str] = []
     for source in PUBLIC_DOCS:
@@ -290,8 +319,9 @@ def test_all_public_markdown_relative_links_resolve():
                 broken.append(f"{source.name}: {link}")
     assert not broken, "broken public-doc links: " + ", ".join(broken)
     evaluation = (PROJECT_ROOT / "docs" / "evaluation.md").read_text(encoding="utf-8")
-    assert "`12 passed`" in evaluation
-    assert "`2 passed`" not in evaluation
+    assert "文档契约" in evaluation
+    assert "`12 passed`" not in evaluation
+    assert "`13 passed`" not in evaluation
 
 
 def test_readme_has_separate_local_demo_and_cloud_terminal_commands():
@@ -327,6 +357,28 @@ def test_public_docs_state_the_synthetic_demo_and_explicit_cloud_boundary():
     assert re.search(r"Cloud[^\n。！？]{0,110}(?:显式|自备)[^\n。！？]{0,24}Key", combined)
     assert not _has_affirmative_claim(combined, _DEMO_PROVIDER_OVERCLAIM_PATTERNS)
     assert not _CLOUD_WITHOUT_KEY_PATTERN.search(combined)
+
+
+def test_public_docs_explain_literal_vs_semantic_metrics_without_claiming_results():
+    evaluation = (PROJECT_ROOT / "docs" / "evaluation.md").read_text(encoding="utf-8")
+
+    assert "逐字覆盖" in evaluation
+    assert "语义评测基础设施" in evaluation
+    assert "语义基线待单独授权" in evaluation
+    assert "真实题目" not in evaluation
+
+
+def test_public_manifest_allows_governance_files_but_not_private_semantic_runner():
+    manifest = PUBLIC_RELEASE_MANIFEST
+
+    assert "CHANGELOG.md" in manifest.files
+    assert ".github/PULL_REQUEST_TEMPLATE.md" in manifest.files
+    assert "docs/release-evidence.md" in manifest.files
+    assert "scripts/task9f_semantic_evaluation.py" not in manifest.files
+    assert (
+        "backend/tests/evaluation/test_task9f_semantic_script.py"
+        in manifest.excluded_files
+    )
 
 
 def test_public_docs_do_not_make_positive_production_or_runtime_agent_claims():

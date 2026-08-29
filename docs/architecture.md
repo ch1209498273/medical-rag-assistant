@@ -76,6 +76,15 @@
 
 两种模式共用 FastAPI、SQLite、Qdrant Local、SSE、会话、引用和页面流程。Cloud 缺少必需配置时，`require_cloud_keys()` 在 Provider 装配前失败；不会捕获错误后静默切到 Demo。Demo 不创建 Cloud client，也不会把问题或证据发往外部服务。
 
+## 招聘方可快速验证的能力
+
+| 关注点 | 可以从仓库验证什么 | 不应误解为 |
+| --- | --- | --- |
+| 可复现性 | 无 Key、无网络 Demo 与 smoke 脚本 | 公网托管服务 |
+| 证据约束 | active 版本过滤、引用定位、整条答案核验 | 医学事实自动正确 |
+| 失败边界 | 固定 reason code、低相关拒答、Cloud 配置 fail closed | 对任意问题都能回答 |
+| 工程演进 | Provider Protocol、版本化资料、评测与回滚记录 | 已完成多人 ACL 或生产部署 |
+
 ## API 与持久化边界
 
 - `GET /api/health` 只返回 `runtime_mode` 与 Provider 状态（`configured`、`missing`、`not_required` 等），不返回凭据。
