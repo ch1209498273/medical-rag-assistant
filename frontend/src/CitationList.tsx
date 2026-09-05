@@ -61,5 +61,6 @@ function formatLocation(citation: Citation): string {
       ? `第 ${citation.paragraph_start}–${citation.paragraph_end} 段`
       : `第 ${citation.paragraph_start} 段`
     : "";
-  return [pages, paragraphs].filter(Boolean).join(" · ") || "位置未提供";
+  const table = citation.table_id ? `表格 ${citation.table_id.replace("table-", "")}` : "";
+  return [pages, paragraphs, table].filter(Boolean).join(" · ") || "位置未提供";
 }

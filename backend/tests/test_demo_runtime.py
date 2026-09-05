@@ -75,7 +75,47 @@ async def test_demo_runtime_never_constructs_cloud_clients(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_demo_candidate_workflow_uses_deterministic_roles_only(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.main.SiliconFlowClient", forbidden_constructor)
+    monkeypatch.setattr("app.main.DeepSeekClient", forbidden_constructor)
+    settings = demo_settings(tmp_path).model_copy(
+        update={"answer_workflow": "agent_workflow_v2a"}
+    )
+    document_runtime = await build_document_runtime_async(settings)
+    rag_runtime = await build_rag_runtime_async(settings, document_runtime)
+    assert rag_runtime.workflow is not None
+    assert type(rag_runtime.workflow.router).__name__ == "DeterministicRouter"
+    await rag_runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_cloud_runtime_does_not_fallback_when_key_is_missing(tmp_path):
     settings = cloud_settings(tmp_path, deepseek_api_key="", siliconflow_api_key="")
     with pytest.raises(RuntimeError, match="required cloud providers are not configured"):
         await build_document_runtime_async(settings)
+
+
+@pytest.mark.asyncio
+async def test_document_runtime_can_open_qdrant_as_read_only_snapshot(
+    monkeypatch, tmp_path
+):
+    calls = {}
+
+    class ReadOnlyStore:
+        def __init__(self, path, *, create_if_missing=True):
+            calls["path"] = path
+            calls["create_if_missing"] = create_if_missing
+
+        def close(self):
+            calls["closed"] = True
+
+    monkeypatch.setattr("app.main.QdrantLocalVectorStore", ReadOnlyStore)
+    settings = demo_settings(tmp_path)
+    runtime = await build_document_runtime_async(
+        settings, qdrant_create_if_missing=False
+    )
+    await runtime.close()
+
+    assert calls["path"] == settings.qdrant_path
+    assert calls["create_if_missing"] is False
+    assert calls["closed"] is True

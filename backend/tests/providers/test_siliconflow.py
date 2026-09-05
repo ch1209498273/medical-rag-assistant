@@ -179,6 +179,7 @@ async def test_unexpected_transport_exception_becomes_safe_provider_error() -> N
     assert error.operation == "embed"
     assert error.status_code is None
     assert error.retryable is False
+    assert error.failure_kind == "transport"
     assert "super-secret-key" not in str(error)
     assert "full policy text" not in str(error)
 
@@ -220,10 +221,11 @@ async def test_rerank_maps_indexes_and_rejects_duplicate_indexes() -> None:
             )
         ]
     )
-    with pytest.raises(ProviderError, match="index"):
+    with pytest.raises(ProviderError, match="index") as raised:
         await SiliconFlowClient("key", transport=duplicate_transport).rerank(
             "问题", ["甲", "乙"], top_n=2
         )
+    assert raised.value.failure_kind == "schema"
 
 
 @pytest.mark.asyncio

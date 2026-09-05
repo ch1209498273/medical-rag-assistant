@@ -13,6 +13,13 @@ import fitz
 from docx import Document
 
 from app.domain.models import ExtractedBlock, ExtractedDocument, SourceRef
+from app.ingestion.headings import (
+    FALLBACK_HEADING_PATH,
+    HeadingMode,
+    iter_docx_xml_paragraphs,
+    resolve_pdf_toc,
+    update_heading_path,
+)
 
 _HEADING_STYLE = re.compile(r"^Heading ([1-9])$", re.IGNORECASE)
 _OCR_TEXT_CHARS_PER_PAGE = 20
@@ -64,9 +71,12 @@ def extract_document(
     *,
     data: bytes | None = None,
     limits: DocumentResourceLimits | None = None,
+    heading_mode: HeadingMode = "legacy",
 ) -> ExtractedDocument:
     """Extract local text from a PDF or DOCX without executing document content."""
 
+    if heading_mode not in ("legacy", "conservative"):
+        raise ValueError("heading_mode must be 'legacy' or 'conservative'")
     source_path = Path(path)
     resource_limits = limits or DocumentResourceLimits()
     document_bytes = (
@@ -78,14 +88,14 @@ def extract_document(
         raise ValueError("document file size limit exceeded")
     suffix = source_path.suffix.casefold()
     if suffix == ".docx":
-        return _extract_docx(source_path, document_bytes, resource_limits)
+        return _extract_docx(source_path, document_bytes, resource_limits, heading_mode)
     if suffix == ".pdf":
-        return _extract_pdf(source_path, document_bytes, resource_limits)
+        return _extract_pdf(source_path, document_bytes, resource_limits, heading_mode)
     raise UnsupportedDocumentError(f"Unsupported document type: {source_path.suffix}")
 
 
 def _extract_docx(
-    path: Path, data: bytes, limits: DocumentResourceLimits
+    path: Path, data: bytes, limits: DocumentResourceLimits, heading_mode: HeadingMode
 ) -> ExtractedDocument:
     _check_docx_zip(data, limits)
     document = Document(io.BytesIO(data))
@@ -119,12 +129,12 @@ def _extract_docx(
                 )
             )
     if not blocks:
-        blocks = _extract_docx_xml_textboxes(path, data, limits)
+        blocks = _extract_docx_xml_textboxes(path, data, limits, heading_mode)
     return ExtractedDocument(file_name=path.name, blocks=tuple(blocks))
 
 
 def _extract_docx_xml_textboxes(
-    path: Path, data: bytes, limits: DocumentResourceLimits
+    path: Path, data: bytes, limits: DocumentResourceLimits, heading_mode: HeadingMode
 ) -> list[ExtractedBlock]:
     """Recover text from drawing textboxes ignored by ``python-docx``.
 
@@ -139,6 +149,36 @@ def _extract_docx_xml_textboxes(
         root = ElementTree.fromstring(document_xml)
     except (KeyError, zipfile.BadZipFile, ElementTree.ParseError) as error:
         raise ValueError("DOCX XML is invalid") from error
+
+    if heading_mode == "conservative":
+        headings: tuple[str, ...] = ()
+        blocks: list[ExtractedBlock] = []
+        total_characters = 0
+        for paragraph in iter_docx_xml_paragraphs(root):
+            total_characters += len(paragraph.text)
+            if total_characters > limits.max_text_chars:
+                raise ValueError("document text character limit exceeded")
+            if paragraph.heading_level is not None:
+                updated = update_heading_path(
+                    headings,
+                    paragraph.heading_level,
+                    paragraph.text,
+                )
+                if updated is not None:
+                    headings = updated
+                continue
+            blocks.append(
+                ExtractedBlock(
+                    text=paragraph.text,
+                    source=SourceRef(
+                        file_name=path.name,
+                        heading_path=headings or FALLBACK_HEADING_PATH,
+                        paragraph_start=paragraph.ordinal,
+                        paragraph_end=paragraph.ordinal,
+                    ),
+                )
+            )
+        return blocks
 
     paragraphs: list[str] = []
     total_characters = 0
@@ -194,7 +234,7 @@ def _docx_paragraph_own_text(paragraph: ElementTree.Element) -> str:
 
 
 def _extract_pdf(
-    path: Path, data: bytes, limits: DocumentResourceLimits
+    path: Path, data: bytes, limits: DocumentResourceLimits, heading_mode: HeadingMode
 ) -> ExtractedDocument:
     blocks: list[ExtractedBlock] = []
     total_characters = 0
@@ -202,6 +242,15 @@ def _extract_pdf(
         page_count = document.page_count
         if page_count > limits.max_pdf_pages:
             raise ValueError("PDF page limit exceeded")
+        heading_paths: tuple[tuple[str, ...], ...] = tuple(
+            FALLBACK_HEADING_PATH for _ in range(page_count)
+        )
+        if heading_mode == "conservative":
+            try:
+                toc = document.get_toc(simple=True)
+            except (RuntimeError, TypeError, ValueError):
+                toc = None
+            heading_paths = resolve_pdf_toc(toc, page_count=page_count).paths_by_page
         for page_number, page in enumerate(document, start=1):
             if page.rect.width * page.rect.height > limits.max_pdf_pixels:
                 raise ValueError("PDF page pixel limit exceeded")
@@ -215,7 +264,7 @@ def _extract_pdf(
                         text=text,
                         source=SourceRef(
                             file_name=path.name,
-                            heading_path=("正文",),
+                            heading_path=heading_paths[page_number - 1],
                             page=page_number,
                             page_end=page_number,
                         ),

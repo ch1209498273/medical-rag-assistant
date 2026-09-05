@@ -11,9 +11,6 @@ $pidFile = Join-Path $modeRoot "pids.json"
 $pythonPath = Join-Path $backendRoot ".venv\Scripts\python.exe"
 $npmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
 
-if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) {
-    throw "backend virtual environment is missing; create backend\.venv first"
-}
 if ($null -eq $npmCommand) {
     throw "npm.cmd is required to start the frontend"
 }
@@ -69,6 +66,31 @@ $env:QDRANT_PATH = "../data/runtime/cloud/qdrant"
 $env:SQLITE_PATH = "../data/runtime/cloud/app.sqlite3"
 $env:HOST = "127.0.0.1"
 $env:PORT = "8000"
+
+# Give an operator a useful configuration error even on a fresh checkout that
+# has not created the Python virtual environment yet.  Only boolean status is
+# emitted; credential values never enter output.
+function Test-ConfiguredProviderCredential {
+    param([AllowNull()][string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+    return $Value.Trim().ToLowerInvariant() -notin @(
+        "placeholder", "your-key-here", "changeme", "missing", "not-set"
+    )
+}
+
+if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) {
+    $deepseekState = if (Test-ConfiguredProviderCredential $env:DEEPSEEK_API_KEY) {
+        "configured"
+    } else { "missing" }
+    $siliconflowState = if (Test-ConfiguredProviderCredential $env:SILICONFLOW_API_KEY) {
+        "configured"
+    } else { "missing" }
+    Write-Host "Cloud provider status: deepseek=$deepseekState, siliconflow=$siliconflowState"
+    if ($deepseekState -ne "configured" -or $siliconflowState -ne "configured") {
+        throw "cloud mode requires configured DeepSeek and SiliconFlow providers"
+    }
+    throw "backend virtual environment is missing; create backend\.venv first"
+}
 
 $checkCode = 'from app.settings import Settings; settings = Settings(app_runtime_mode="cloud"); print("deepseek=" + settings.provider_status("deepseek")); print("siliconflow=" + settings.provider_status("siliconflow"))'
 $statusOutput = $null

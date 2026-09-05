@@ -13,6 +13,7 @@ class SourceRef:
     page_end: int | None = None
     paragraph_start: int | None = None
     paragraph_end: int | None = None
+    table_id: str | None = None
 
 
 @dataclass(frozen=True)

@@ -2,9 +2,16 @@ import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 
 import { ApiError, getSession, listSessions, streamChat } from "./api/client";
-import type { ChatEvent, ChatStage, SessionMessage, SessionSummary } from "./api/types";
+import type {
+  AudienceScope,
+  ChatEvent,
+  ChatStage,
+  SessionMessage,
+  SessionSummary,
+} from "./api/types";
 import CitationList from "./CitationList";
 import FeedbackButtons from "./FeedbackButtons";
+import WorkflowProgress from "./WorkflowProgress";
 
 export const CURRENT_SESSION_KEY = "hemodialysis.currentSessionId";
 
@@ -13,18 +20,31 @@ type UiMessage = SessionMessage;
 const STAGE_LABELS: Record<ChatStage, string> = {
   accepted: "处理中",
   rewriting: "正在理解追问",
+  preflight: "正在检查资料资格",
+  routing: "正在选择处理路径",
   retrieving: "正在检索内部资料",
   reranking: "正在重排序依据",
   generating: "正在生成有依据的回答",
   validating: "正在核验引用",
+  verifying: "正在核验回答",
 };
 
 const EMPTY_MESSAGE = "还没有问题，先从一条制度问题开始。";
+
+const AUDIENCE_SCOPE_OPTIONS: Array<{ value: AudienceScope; label: string }> = [
+  { value: "unspecified", label: "未指定" },
+  { value: "all_staff", label: "全体医护" },
+  { value: "nurse", label: "护士" },
+  { value: "doctor", label: "医生" },
+  { value: "pharmacist", label: "药师" },
+  { value: "administrator", label: "管理员" },
+];
 
 export default function ChatPage() {
   const [sessionId, setSessionId] = useState<string | null>(() => readSessionId());
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [draft, setDraft] = useState("");
+  const [audienceScope, setAudienceScope] = useState<AudienceScope>("unspecified");
   const [streaming, setStreaming] = useState(false);
   const [restoring, setRestoring] = useState(() => Boolean(readSessionId()));
   const [activeStage, setActiveStage] = useState<ChatStage | null>(null);
@@ -140,6 +160,7 @@ export default function ChatPage() {
         role: "user",
         content: question,
         status: "submitted",
+        audience_scope: audienceScope,
       }),
     ]);
 
@@ -187,6 +208,7 @@ export default function ChatPage() {
           citations: eventValue.data.citations,
           reason_code: eventValue.data.reason_code ?? null,
           reference_answer: eventValue.data.reference_answer ?? null,
+          workflow_summary: eventValue.data.workflow_summary ?? null,
         });
         setMessages((current) => updatePendingAssistant(current, pendingAssistantId, finalMessage));
         setActiveStage(null);
@@ -200,13 +222,14 @@ export default function ChatPage() {
         content,
         status: "error",
         reason_code: eventValue.data.reason_code,
+        workflow_summary: eventValue.data.workflow_summary ?? null,
       });
       setMessages((current) => updatePendingAssistant(current, pendingAssistantId, errorMessage));
       setActiveStage(null);
     };
 
     try {
-      await streamChat(question, sessionAtStart, handleEvent);
+      await streamChat(question, sessionAtStart, handleEvent, audienceScope);
     } catch {
       setPageError("暂时无法提交问题，请稍后重试。");
       setMessages((current) =>
@@ -310,6 +333,22 @@ export default function ChatPage() {
             </div>
             <form className="chat-composer" onSubmit={(event) => void sendQuestion(event)}>
               <label htmlFor="question-input">问题</label>
+              <div className="chat-scope-control">
+                <label htmlFor="audience-scope">希望适用的人员范围</label>
+                <select
+                  id="audience-scope"
+                  value={audienceScope}
+                  onChange={(event) => setAudienceScope(event.target.value as AudienceScope)}
+                  disabled={streaming || restoring}
+                >
+                  {AUDIENCE_SCOPE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <small className="chat-scope-help">仅影响资料检索，不等于登录权限</small>
+              </div>
               <textarea
                 id="question-input"
                 name="question"
@@ -347,6 +386,9 @@ function MessageView({ message }: { message: UiMessage }) {
           {message.content}
         </div>
       )}
+      {isAssistant && message.status !== "processing" && (
+        <WorkflowProgress summary={message.workflow_summary ?? null} />
+      )}
       {isAssistant && message.status !== "error" && message.status !== "processing" && (
         <>
           {message.reference_answer && <ReferenceAnswerCard answer={message.reference_answer} />}
@@ -354,6 +396,7 @@ function MessageView({ message }: { message: UiMessage }) {
           <FeedbackButtons
             messageId={message.message_id}
             initialHelpful={message.feedback?.helpful ?? message.helpful ?? null}
+            initialReason={message.feedback?.reason ?? null}
           />
         </>
       )}
@@ -408,6 +451,8 @@ function makeMessage(input: Partial<UiMessage> & Pick<UiMessage, "message_id" | 
     citations: input.citations ?? [],
     reason_code: input.reason_code ?? null,
     reference_answer: input.reference_answer ?? null,
+    audience_scope: input.audience_scope ?? "unspecified",
+    workflow_summary: input.workflow_summary ?? null,
     created_at: input.created_at ?? new Date().toISOString(),
     feedback: input.feedback ?? null,
   };
@@ -485,6 +530,12 @@ function readSessionId(): string | null {
 }
 
 function refusalText(reasonCode?: string): string {
+  if (reasonCode === "EVIDENCE_SCOPE_UNCLEAR") {
+    return "希望适用的人员范围尚未确认，暂时无法提供经过核验的回答。请选择合适的人员范围后重试。";
+  }
+  if (reasonCode === "DOCUMENT_BUSINESS_STATUS_UNKNOWN") {
+    return "资料尚未完成业务确认，暂时无法作为正式依据。请联系资料管理员确认后重试。";
+  }
   if (reasonCode === "INSUFFICIENT_EVIDENCE" || reasonCode === "ANSWER_NOT_VERIFIABLE") {
     return "现有资料不足，暂时无法提供有依据的回答。";
   }

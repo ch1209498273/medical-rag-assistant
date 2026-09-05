@@ -618,4 +618,3 @@ def _remove_reparse_path(path: Path) -> None:
         )
         return
     path.unlink(missing_ok=True)
-

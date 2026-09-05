@@ -4,6 +4,8 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
+
 from app.api.chat import _safe_event
 from app.chat.history import HistoryContextBuilder
 from app.chat.orchestrator import ChatOrchestrator
@@ -11,7 +13,6 @@ from app.main import create_app
 from app.rag.models import ChatEvent
 from app.settings import Settings
 from app.storage.sqlite import SqliteDocumentRepository
-from fastapi.testclient import TestClient
 
 
 def test_rag_runtime_closes_deepseek_before_document_resources():
@@ -118,6 +119,23 @@ class FakeRagService:
         yield ChatEvent(type="final", data={"refused": False, "citations": []})
 
 
+class AudienceAwareRagService:
+    def __init__(self) -> None:
+        self.audience_scope = None
+
+    async def stream(self, question, *, audience_scope):
+        self.audience_scope = audience_scope
+        yield ChatEvent(type="status", data={"stage": "retrieving"})
+        yield ChatEvent(
+            type="final",
+            data={
+                "refused": True,
+                "citations": [],
+                "reason_code": "EVIDENCE_SCOPE_UNCLEAR",
+            },
+        )
+
+
 def parse_sse(text: str) -> list[dict[str, object]]:
     parsed = []
     for frame in text.strip().split("\n\n"):
@@ -156,6 +174,32 @@ def test_chat_stream_preserves_safe_event_order(tmp_path):
     ]
     assert response.headers["cache-control"] == "no-cache"
     assert response.headers["x-content-type-options"] == "nosniff"
+
+
+def test_chat_stream_passes_audience_scope_as_a_data_hint_not_identity(tmp_path):
+    rag = AudienceAwareRagService()
+    client, _ = make_chat_client(tmp_path, rag)
+
+    response = client.post(
+        "/api/chat/stream",
+        json={"question": "护士培训流程？", "audience_scope": "nurse"},
+    )
+
+    assert response.status_code == 200
+    assert rag.audience_scope == "nurse"
+
+
+def test_chat_stream_accepts_pharmacist_audience_scope(tmp_path):
+    rag = AudienceAwareRagService()
+    client, _ = make_chat_client(tmp_path, rag)
+
+    response = client.post(
+        "/api/chat/stream",
+        json={"question": "药师培训流程？", "audience_scope": "pharmacist"},
+    )
+
+    assert response.status_code == 200
+    assert rag.audience_scope == "pharmacist"
 
 
 def test_chat_rejects_empty_or_oversized_question_without_model_call(tmp_path):
@@ -330,6 +374,53 @@ def test_final_reference_answer_is_kept_separate_on_answered_messages():
     assert safe.data["reference_answer"] == "单独标注的通用参考"
 
 
+def test_workflow_summary_is_public_only_as_fixed_safe_facts():
+    event = ChatEvent(
+        type="final",
+        data={
+            "refused": True,
+            "citations": [],
+            "reason_code": "INSUFFICIENT_EVIDENCE",
+            "workflow_summary": {
+                "workflow_version": "agent_workflow_v2a",
+                "run_id": "run-12345678",
+                "route": "direct",
+                "outcome": "refused",
+                "verifier_status": "not_run",
+                "http_calls": 1,
+                "elapsed_ms": 40,
+                "reason_code": "INSUFFICIENT_EVIDENCE",
+            },
+        },
+    )
+
+    safe = _safe_event(event, require_terminal_metadata=False)
+
+    assert safe is not None
+    assert safe.data["workflow_summary"]["verifier_status"] == "not_run"
+    assert "run_id" in safe.data["workflow_summary"]
+
+    unsafe = ChatEvent(
+        type="final",
+        data={
+            "refused": True,
+            "citations": [],
+            "reason_code": "INSUFFICIENT_EVIDENCE",
+            "workflow_summary": {
+                "workflow_version": "agent_workflow_v2a",
+                "run_id": "run-12345678",
+                "route": "direct",
+                "outcome": "refused",
+                "verifier_status": "not_run",
+                "http_calls": 1,
+                "elapsed_ms": 40,
+                "reason_code": "provider secret",
+            },
+        },
+    )
+    assert _safe_event(unsafe, require_terminal_metadata=False) is None
+
+
 class StatefulRagService:
     async def stream(self, question):
         yield ChatEvent(type="status", data={"stage": "retrieving"})
@@ -339,9 +430,73 @@ class StatefulRagService:
         )
 
 
+class SummaryRagService:
+    async def stream(self, question):
+        yield ChatEvent(type="status", data={"stage": "routing"})
+        yield ChatEvent(type="answer_delta", data={"text": "依据资料回答。", "source_ids": ["S1"]})
+        yield ChatEvent(
+            type="final",
+            data={
+                "refused": False,
+                "citations": [
+                    {
+                        "reference_id": "S1",
+                        "file_name": "制度.docx",
+                        "heading_path": ["正文"],
+                        "page": None,
+                        "page_end": None,
+                        "paragraph_start": 1,
+                        "paragraph_end": 1,
+                        "excerpt": "公开样例资料。",
+                    }
+                ],
+                "workflow_summary": {
+                    "workflow_version": "agent_workflow_v2a",
+                    "run_id": "run-12345678",
+                    "route": "direct",
+                    "outcome": "answered",
+                    "verifier_status": "not_run",
+                    "http_calls": 1,
+                    "elapsed_ms": 120,
+                    "reason_code": None,
+                },
+            },
+        )
+
+
 class NeverCalledRewriter:
     async def rewrite(self, question, history):
         raise AssertionError("first question must not be rewritten")
+
+
+def test_workflow_summary_is_streamed_and_restored_from_history(tmp_path):
+    repository = SqliteDocumentRepository(tmp_path / "metadata.sqlite3")
+    orchestrator = ChatOrchestrator(
+        repository,
+        NeverCalledRewriter(),
+        SummaryRagService(),
+        HistoryContextBuilder(),
+    )
+    settings = Settings(
+        _env_file=None,
+        source_documents_dir=tmp_path,
+        sqlite_path=tmp_path / "metadata.sqlite3",
+        qdrant_path=tmp_path / "qdrant",
+    )
+    try:
+        with TestClient(
+            create_app(settings, document_service=object(), chat_orchestrator=orchestrator)
+        ) as client:
+            response = client.post("/api/chat/stream", json={"question": "问题"})
+            events = parse_sse(response.text)
+            session_id = events[0]["data"]["session_id"]
+            final = events[-1]
+
+            assert final["data"]["workflow_summary"]["route"] == "direct"
+            restored = client.get(f"/api/chat/sessions/{session_id}").json()
+            assert restored["messages"][-1]["workflow_summary"]["verifier_status"] == "not_run"
+    finally:
+        repository.close()
 
 
 def test_stateful_partial_answer_hides_internal_reference_question(tmp_path):
@@ -452,6 +607,73 @@ def test_stateful_chat_persists_session_and_feedback(tmp_path):
             assert client.put(
                 "/api/chat/messages/not-user/feedback", json={"helpful": True}
             ).status_code == 404
+    finally:
+        repository.close()
+
+
+def test_feedback_reason_is_returned_and_helpful_feedback_cannot_carry_one(tmp_path):
+    repository = SqliteDocumentRepository(tmp_path / "metadata.sqlite3")
+    orchestrator = ChatOrchestrator(
+        repository,
+        NeverCalledRewriter(),
+        StatefulRagService(),
+        HistoryContextBuilder(),
+    )
+    settings = Settings(
+        _env_file=None,
+        source_documents_dir=tmp_path,
+        sqlite_path=tmp_path / "metadata.sqlite3",
+        qdrant_path=tmp_path / "qdrant",
+    )
+    try:
+        with TestClient(
+            create_app(settings, document_service=object(), chat_orchestrator=orchestrator)
+        ) as client:
+            response = client.post("/api/chat/stream", json={"question": "问题"})
+            assistant_id = parse_sse(response.text)[-1]["data"]["message_id"]
+
+            saved = client.put(
+                f"/api/chat/messages/{assistant_id}/feedback",
+                json={"helpful": False, "reason": "missing_step"},
+            )
+            assert saved.status_code == 200
+            assert saved.json()["reason"] == "missing_step"
+
+            invalid = client.put(
+                f"/api/chat/messages/{assistant_id}/feedback",
+                json={"helpful": True, "reason": "too_slow"},
+            )
+            assert invalid.status_code in {400, 422}
+    finally:
+        repository.close()
+
+
+def test_stateful_chat_persists_audience_scope_on_user_message(tmp_path):
+    repository = SqliteDocumentRepository(tmp_path / "metadata.sqlite3")
+    orchestrator = ChatOrchestrator(
+        repository,
+        NeverCalledRewriter(),
+        StatefulRagService(),
+        HistoryContextBuilder(),
+    )
+    settings = Settings(
+        _env_file=None,
+        source_documents_dir=tmp_path,
+        sqlite_path=tmp_path / "metadata.sqlite3",
+        qdrant_path=tmp_path / "qdrant",
+    )
+    try:
+        with TestClient(
+            create_app(settings, document_service=object(), chat_orchestrator=orchestrator)
+        ) as client:
+            response = client.post(
+                "/api/chat/stream",
+                json={"question": "护士培训流程？", "audience_scope": "nurse"},
+            )
+            session_id = parse_sse(response.text)[0]["data"]["session_id"]
+            restored = client.get(f"/api/chat/sessions/{session_id}").json()
+
+        assert restored["messages"][0]["audience_scope"] == "nurse"
     finally:
         repository.close()
 

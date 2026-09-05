@@ -675,4 +675,3 @@ def test_non_history_reports_unreadable_git_metadata(tmp_path: Path, monkeypatch
     assert findings == (
         Finding("unreadable", ".git", "Git repository cannot be inspected"),
     )
-

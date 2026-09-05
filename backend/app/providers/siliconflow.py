@@ -38,6 +38,7 @@ class SiliconFlowClient(ProviderHttpClient):
         sleep: Any = None,
         timeout: float = 30.0,
         max_retries: int = 3,
+        usage_observer: Any = None,
     ) -> None:
         super().__init__(
             "siliconflow",
@@ -47,6 +48,8 @@ class SiliconFlowClient(ProviderHttpClient):
             sleep=sleep,
             timeout=timeout,
             max_retries=max_retries,
+            model=embedding_model,
+            usage_observer=usage_observer,
         )
         self.embedding_model = embedding_model
         self.reranker_model = reranker_model
@@ -149,7 +152,9 @@ class SiliconFlowClient(ProviderHttpClient):
 
 
 def _invalid(operation: str, message: str) -> ProviderError:
-    return ProviderError("siliconflow", operation, 200, False, message)
+    return ProviderError(
+        "siliconflow", operation, 200, False, message, failure_kind="schema"
+    )
 
 
 def _parse_embeddings(response: Any, expected: int) -> list[list[float]]:

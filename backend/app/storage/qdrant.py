@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import shutil
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
@@ -22,12 +24,44 @@ class QdrantLocalVectorStore:
     collection_name = "policy_chunks_v1"
     vector_dimension = 1024
 
-    def __init__(self, data_path: Path) -> None:
-        data_path.mkdir(parents=True, exist_ok=True)
-        client = QdrantClient(path=str(data_path))
+    def __init__(self, data_path: Path, *, create_if_missing: bool = True) -> None:
+        """Open the local store, optionally without creating any state.
+
+        Production ingestion keeps the historical default of creating the
+        Qdrant directory and collection.  Offline evaluation passes
+        ``create_if_missing=False`` so a missing snapshot fails closed without
+        leaving a newly-created database behind.
+        """
+
+        self._readonly_tempdir: tempfile.TemporaryDirectory[str] | None = None
+        client_path = data_path
+        if create_if_missing:
+            data_path.mkdir(parents=True, exist_ok=True)
+        else:
+            if not data_path.is_dir():
+                raise ValueError("qdrant data path is unavailable")
+            # Qdrant Local Mode opens its lock and collection SQLite files in
+            # read/write mode during construction.  Mirror the source first so
+            # those unavoidable implementation details never touch R1 input.
+            self._readonly_tempdir = tempfile.TemporaryDirectory(
+                prefix="task14-qdrant-readonly-"
+            )
+            client_path = Path(self._readonly_tempdir.name) / "snapshot"
+            try:
+                shutil.copytree(data_path, client_path)
+            except BaseException:
+                self._cleanup_readonly_mirror()
+                raise
+        try:
+            client = QdrantClient(path=str(client_path))
+        except BaseException:
+            self._cleanup_readonly_mirror()
+            raise
         self._client = client
         try:
             if not self._client.collection_exists(self.collection_name):
+                if not create_if_missing:
+                    raise ValueError("qdrant collection is unavailable")
                 self._client.create_collection(
                     collection_name=self.collection_name,
                     vectors_config=qmodels.VectorParams(
@@ -43,6 +77,8 @@ class QdrantLocalVectorStore:
                     "qdrant constructor cleanup failed",
                     extra={"stage": "qdrant_constructor_cleanup"},
                 )
+            finally:
+                self._cleanup_readonly_mirror()
             raise
 
     def upsert(
@@ -123,12 +159,43 @@ class QdrantLocalVectorStore:
         )
         return [self._search_hit(record.payload or {}, 0.0) for record in records]
 
+    def snapshot_all_chunks(self, limit: int = 10_000) -> list[SearchHit]:
+        """Read a bounded local snapshot across versions for mismatch diagnostics."""
+
+        if limit <= 0:
+            return []
+        if limit > 10_000:
+            raise ValueError("snapshot limit exceeds the hard bound")
+        records, _ = self._client.scroll(
+            collection_name=self.collection_name,
+            limit=limit,
+            with_payload=True,
+            with_vectors=False,
+        )
+        return [self._search_hit(record.payload or {}, 0.0) for record in records]
+
     def collection_info(self):
         """Expose read-only collection metadata for health checks and integration tests."""
         return self._client.get_collection(self.collection_name)
 
     def close(self) -> None:
-        self._client.close()
+        try:
+            self._client.close()
+        finally:
+            self._cleanup_readonly_mirror()
+
+    def _cleanup_readonly_mirror(self) -> None:
+        tempdir = self._readonly_tempdir
+        if tempdir is None:
+            return
+        self._readonly_tempdir = None
+        try:
+            tempdir.cleanup()
+        except BaseException:  # noqa: BLE001 - preserve the original error
+            LOGGER.warning(
+                "qdrant readonly mirror cleanup failed",
+                extra={"stage": "qdrant_readonly_mirror_cleanup"},
+            )
 
     def delete_version(self, version_id: str) -> None:
         """Remove vectors from a timed-out unpublished version."""
@@ -160,6 +227,7 @@ class QdrantLocalVectorStore:
             "page_end": chunk.source.page_end,
             "paragraph_start": chunk.source.paragraph_start,
             "paragraph_end": chunk.source.paragraph_end,
+            "table_id": chunk.source.table_id,
         }
 
     @staticmethod
@@ -179,6 +247,7 @@ class QdrantLocalVectorStore:
                 payload.get("paragraph_start"), "paragraph_start"
             ),
             paragraph_end=_optional_int(payload.get("paragraph_end"), "paragraph_end"),
+            table_id=_optional_table_id(payload.get("table_id")),
         )
         return SearchHit(
             version_id=version_id,
@@ -214,4 +283,15 @@ def _optional_int(value: object, field: str) -> int | None:
         raise ValueError(  # noqa: TRY004 - malformed untrusted payload is a value error
             f"invalid qdrant payload field: {field}"
         )
+    return value
+
+
+def _optional_table_id(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.startswith("table-"):
+        raise ValueError("invalid qdrant payload field: table_id")
+    suffix = value.removeprefix("table-")
+    if not suffix.isdigit() or int(suffix) < 1:
+        raise ValueError("invalid qdrant payload field: table_id")
     return value

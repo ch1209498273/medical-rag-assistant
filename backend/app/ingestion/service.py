@@ -16,7 +16,11 @@ from typing import Any, Literal
 import fitz
 
 from app.domain.models import ExtractedBlock, ExtractedDocument, SourceRef
-from app.domain.ports import DocumentRepository, DocumentVersion
+from app.domain.ports import (
+    DocumentBusinessMetadataInput,
+    DocumentRepository,
+    DocumentVersion,
+)
 from app.errors import ProviderError
 from app.ingestion.chunker import chunk_document
 from app.ingestion.extractors import DocumentResourceLimits, extract_document
@@ -384,6 +388,15 @@ class IngestionService:
         """Return repository metadata without source text or filesystem paths."""
 
         return self.repository.list_documents()
+
+    def update_document_business_metadata(
+        self, document_id: int, metadata: DocumentBusinessMetadataInput
+    ) -> Any:
+        """Persist controlled business metadata without reading document text."""
+
+        if self._closing:
+            raise RuntimeError("ingestion service is closing")
+        return self.repository.upsert_document_business_metadata(document_id, metadata)
 
     async def reindex(self, document_id: int) -> IndexResult:
         """Force a fresh version using only the repository's safe file name."""

@@ -289,7 +289,9 @@ def test_empty_knowledge_base_refuses_without_vector_search_or_deepseek(tmp_path
     assert response.status_code == 200
     assert events[-1]["data"]["reason_code"] == "INSUFFICIENT_EVIDENCE"
     assert events[-1]["data"]["refused"] is True
-    assert cloud.embed_calls == 1
+    # An empty active-version set is rejected before embedding; there is no
+    # reason to call a provider when the local knowledge base is ineligible.
+    assert cloud.embed_calls == 0
     assert cloud.rerank_calls == 0
     assert vector_store.search_calls == 0
     assert deepseek.calls == 0

@@ -7,7 +7,9 @@ from app.domain.models import Chunk, SourceRef
 from app.storage.qdrant import QdrantLocalVectorStore
 
 
-def make_chunk(text: str, *, chunk_id: str = "chunk-1") -> Chunk:
+def make_chunk(
+    text: str, *, chunk_id: str = "chunk-1", table_id: str | None = None
+) -> Chunk:
     return Chunk(
         chunk_id=chunk_id,
         text=text,
@@ -17,6 +19,7 @@ def make_chunk(text: str, *, chunk_id: str = "chunk-1") -> Chunk:
             heading_path=("第二章", "值班"),
             paragraph_start=12,
             paragraph_end=14,
+            table_id=table_id,
         ),
     )
 
@@ -64,6 +67,25 @@ def test_vector_payload_preserves_locatable_source_fields(vector_store):
     assert hit.chunk.source.heading_path == ("第二章", "值班")
     assert hit.chunk.source.paragraph_start == 12
     assert hit.chunk.source.paragraph_end == 14
+
+
+def test_vector_payload_round_trips_table_locator(vector_store):
+    chunk = make_chunk("表格要求", table_id="table-7")
+    chunk = Chunk(
+        chunk_id=chunk.chunk_id,
+        text=chunk.text,
+        content_hash=chunk.content_hash,
+        source=SourceRef(
+            file_name=chunk.source.file_name,
+            heading_path=chunk.source.heading_path,
+            table_id=chunk.source.table_id,
+        ),
+    )
+    vector_store.upsert("v1", [chunk], [vector(1.0)])
+
+    hit = vector_store.search(vector(1.0), {"v1"}, limit=1)[0]
+
+    assert hit.chunk.source.table_id == "table-7"
 
 
 def test_local_qdrant_data_persists_across_restart(tmp_path):
@@ -137,6 +159,78 @@ def test_creates_the_required_cosine_collection(vector_store):
     assert vector_store.collection_name == "policy_chunks_v1"
     assert collection.config.params.vectors.size == 1024
     assert collection.config.params.vectors.distance.value == "Cosine"
+
+
+def test_read_only_store_rejects_missing_collection_without_creating_it(tmp_path, monkeypatch):
+    import app.storage.qdrant as qdrant_module
+
+    data_path = tmp_path / "qdrant"
+    data_path.mkdir()
+    calls: list[str] = []
+
+    class ReadOnlyClient:
+        def collection_exists(self, name):
+            calls.append("exists")
+            return False
+
+        def create_collection(self, **kwargs):
+            calls.append("create")
+            raise AssertionError("read-only store must not create a collection")
+
+        def close(self):
+            calls.append("close")
+
+    monkeypatch.setattr(qdrant_module, "QdrantClient", lambda **kwargs: ReadOnlyClient())
+
+    with pytest.raises(ValueError, match="collection"):
+        QdrantLocalVectorStore(data_path, create_if_missing=False)
+
+    assert calls == ["exists", "close"]
+    assert data_path.is_dir()
+
+
+def test_read_only_store_does_not_create_missing_directory(tmp_path):
+    data_path = tmp_path / "missing-qdrant"
+
+    with pytest.raises(ValueError, match="path|directory"):
+        QdrantLocalVectorStore(data_path, create_if_missing=False)
+
+    assert not data_path.exists()
+
+
+def test_read_only_store_does_not_create_metadata_in_existing_directory(tmp_path):
+    data_path = tmp_path / "empty-qdrant"
+    data_path.mkdir()
+    before = tuple(data_path.iterdir())
+
+    with pytest.raises(ValueError, match="collection"):
+        QdrantLocalVectorStore(data_path, create_if_missing=False)
+
+    assert tuple(data_path.iterdir()) == before
+
+
+def test_read_only_store_mirrors_existing_data_without_mutating_source(tmp_path):
+    data_path = tmp_path / "qdrant"
+    writer = QdrantLocalVectorStore(data_path)
+    writer.close()
+    before = {
+        item.relative_to(data_path): (item.stat().st_size, item.stat().st_mtime_ns)
+        for item in data_path.rglob("*")
+        if item.is_file()
+    }
+
+    reader = QdrantLocalVectorStore(data_path, create_if_missing=False)
+    try:
+        assert reader.collection_info()
+    finally:
+        reader.close()
+
+    after = {
+        item.relative_to(data_path): (item.stat().st_size, item.stat().st_mtime_ns)
+        for item in data_path.rglob("*")
+        if item.is_file()
+    }
+    assert after == before
 
 
 def test_collection_initialization_failure_preserves_root_error_when_close_also_fails(

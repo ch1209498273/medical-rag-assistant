@@ -18,9 +18,16 @@ PUBLIC_DOCS = (
         "evaluation.md",
         "engineering-decisions.md",
         "multi-agent-development.md",
+        "portfolio-brief.md",
         "project-case-study.md",
         "demo-guide.md",
+        "release-evidence.md",
     )),
+)
+PROJECT_DOCS = (
+    PROJECT_ROOT / "docs" / "portfolio-brief.md",
+    PROJECT_ROOT / "docs" / "project-case-study.md",
+    PROJECT_ROOT / "docs" / "evaluation.md",
 )
 
 EXPECTED_README_HEADINGS = (
@@ -199,6 +206,14 @@ def read_public_markdown() -> str:
     return "\n".join(path.read_text(encoding="utf-8") for path in PUBLIC_DOCS)
 
 
+def test_public_docs_describe_task16b_data_minimization():
+    evaluation = (PROJECT_ROOT / "docs" / "evaluation.md").read_text(encoding="utf-8")
+    assert "切片后按需发送" in evaluation
+    assert "不把整份 Word 或全部 1,114 个切片" in evaluation
+    assert "Task 16B" in evaluation
+    assert "真实题目" not in evaluation
+
+
 def _readme_top_level_headings(text: str) -> tuple[str, ...]:
     headings: list[str] = []
     in_fence = False
@@ -277,6 +292,19 @@ def _has_credential_material(text: str) -> bool:
 
 def test_all_public_markdown_files_exist():
     assert all(path.is_file() for path in PUBLIC_DOCS)
+
+
+def test_v1_1_governance_docs_distinguish_engineering_evidence_from_business_readiness():
+    """Keep v1.1's honest claims and scenario contracts from silently regressing."""
+
+    assert all(path.is_file() for path in PROJECT_DOCS)
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in PROJECT_DOCS)
+
+    assert "可见引用不等于答案正确" in combined
+    assert "资料有版本和来源定位" in combined
+    assert "安全门先于回答率" in combined
+    assert "不等于医学准确率认证" in combined
+    assert "不把它包装成已经上线的临床系统" in combined
 
 
 def test_readme_follows_the_approved_top_level_heading_sequence():
@@ -364,8 +392,22 @@ def test_public_docs_explain_literal_vs_semantic_metrics_without_claiming_result
 
     assert "逐字覆盖" in evaluation
     assert "语义评测基础设施" in evaluation
-    assert "语义基线待单独授权" in evaluation
+    assert "语义基线已受控执行一次，但尚不稳定" in evaluation
+    assert "不能作为稳定语义分数" in evaluation
     assert "真实题目" not in evaluation
+
+
+def test_public_metrics_require_denominator_and_limitations():
+    """Keep aggregate observations auditable and stop business overclaiming."""
+
+    evaluation = (PROJECT_ROOT / "docs" / "evaluation.md").read_text(encoding="utf-8")
+    assert "20/30" in evaluation
+    assert "不是医学准确率" in evaluation
+    assert "真实采纳率" not in evaluation
+    assert "临床改善已验证" not in evaluation
+    assert "ROI 已验证" not in evaluation
+    assert "## 指标字典（分子、分母、置信区间与限制）" in evaluation
+    assert "C1/C2 与 9F-B 使用不同评测协议，不能横向比较" in evaluation
 
 
 def test_public_manifest_allows_governance_files_but_not_private_semantic_runner():
@@ -375,8 +417,23 @@ def test_public_manifest_allows_governance_files_but_not_private_semantic_runner
     assert ".github/PULL_REQUEST_TEMPLATE.md" in manifest.files
     assert "docs/release-evidence.md" in manifest.files
     assert "scripts/task9f_semantic_evaluation.py" not in manifest.files
+    assert "backend/tests/evaluation/test_task9f_semantic_script.py" not in manifest.files
+
+
+def test_public_manifest_excludes_private_phase2a_runner_tests():
+    manifest = PUBLIC_RELEASE_MANIFEST
+
+    assert "scripts/v2a_evaluate.py" not in manifest.files
+    assert "backend/tests/evaluation/test_v2a_preflight.py" not in manifest.files
+    assert "backend/tests/evaluation/test_v2a_evaluate.py" not in manifest.files
+
+
+def test_public_manifest_excludes_real_data_heading_audit():
+    manifest = PUBLIC_RELEASE_MANIFEST
+
+    assert "scripts/heading_extraction_audit.py" not in manifest.files
     assert (
-        "backend/tests/evaluation/test_task9f_semantic_script.py"
+        "backend/tests/ingestion/test_heading_extraction_audit.py"
         in manifest.excluded_files
     )
 

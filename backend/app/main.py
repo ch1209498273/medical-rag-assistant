@@ -12,6 +12,14 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.agents import (
+    AgentWorkflow,
+    DeepSeekRouter,
+    DeterministicRouter,
+    DeterministicVerifier,
+)
+from app.agents.contracts import AgentVariant, validate_agent_variant
+from app.api.admin_feedback import create_feedback_review_router
 from app.api.chat import create_chat_router
 from app.api.documents import create_documents_router
 from app.api.evaluations import create_evaluations_router
@@ -21,6 +29,9 @@ from app.chat.orchestrator import ChatOrchestrator
 from app.chat.reference import ReferenceAnswerService
 from app.chat.rewriter import FollowUpRewriter
 from app.evaluation.service import EvaluationService
+from app.feedback.evidence import LocalEvidenceResolver
+from app.feedback.repository import FeedbackProjectionRepository
+from app.feedback.review_service import FeedbackReviewService
 from app.ingestion.service import IngestionService
 from app.providers.contracts import KnowledgeProvider, LanguageModelProvider
 from app.providers.deepseek import DeepSeekClient
@@ -33,6 +44,7 @@ from app.providers.minimax import create_evaluation_generator
 from app.providers.siliconflow import SiliconFlowClient
 from app.rag.answering import AnswerService, RagService
 from app.rag.deepseek_verifier import DeepSeekClaimVerifier
+from app.rag.lexical import ActiveLexicalIndex
 from app.rag.retrieval import RetrievalService
 from app.settings import Settings, get_settings, require_cloud_keys
 from app.storage.qdrant import QdrantLocalVectorStore
@@ -40,6 +52,20 @@ from app.storage.sqlite import SqliteDocumentRepository
 
 LOGGER_NAME = "hemodialysis.backend"
 APP_VERSION = "0.1.0"
+
+
+def build_agent_services(
+    variant: AgentVariant,
+    *,
+    direct_service: Any,
+    verify_service: Any,
+) -> tuple[Any, Any]:
+    """Select already-built candidate services for one explicit variant."""
+
+    selected = validate_agent_variant(variant)
+    if selected == "router_direct_fallback":
+        return direct_service, direct_service
+    return direct_service, verify_service
 
 
 class _SafeLogFilter(logging.Filter):
@@ -160,6 +186,7 @@ class RagRuntime:
     rewriter: FollowUpRewriter | None = None
     history_builder: HistoryContextBuilder | None = None
     orchestrator: ChatOrchestrator | None = None
+    workflow: AgentWorkflow | None = None
     closed: bool = False
     _deepseek_close_started: bool = False
     _document_close_started: bool = False
@@ -219,8 +246,12 @@ async def build_document_runtime_async(
     settings: Settings,
     *,
     transport: Any = None,
+    qdrant_create_if_missing: bool = True,
 ) -> DocumentRuntime:
     """Build document resources with awaitable, explicit ownership cleanup."""
+
+    if not isinstance(qdrant_create_if_missing, bool):
+        raise TypeError("qdrant_create_if_missing must be a boolean")
 
     if settings.app_runtime_mode == "cloud":
         require_cloud_keys(settings)
@@ -229,7 +260,12 @@ async def build_document_runtime_async(
     try:
         repository = SqliteDocumentRepository(settings.sqlite_path)
         acquired.append(repository)
-        vector_store = QdrantLocalVectorStore(settings.qdrant_path)
+        if qdrant_create_if_missing:
+            vector_store = QdrantLocalVectorStore(settings.qdrant_path)
+        else:
+            vector_store = QdrantLocalVectorStore(
+                settings.qdrant_path, create_if_missing=False
+            )
         acquired.append(vector_store)
         if settings.app_runtime_mode == "demo":
             provider: KnowledgeProvider = DemoKnowledgeProvider()
@@ -241,6 +277,12 @@ async def build_document_runtime_async(
                 reranker_model=settings.reranker_model,
                 ocr_model=settings.ocr_model,
                 transport=transport,
+                max_retries=(
+                    0
+                    if getattr(settings, "answer_workflow", "baseline_v1")
+                    == "agent_workflow_v2a"
+                    else 3
+                ),
             )
         acquired.append(provider)
         service = IngestionService(
@@ -302,9 +344,13 @@ async def build_rag_runtime_async(
     document_runtime: DocumentRuntime,
     *,
     transport: Any = None,
+    agent_variant: AgentVariant | None = None,
 ) -> RagRuntime:
     """Attach answer services with awaitable, explicit ownership cleanup."""
 
+    candidate_variant: AgentVariant = "router_conditional_verify_fallback"
+    if agent_variant is not None:
+        candidate_variant = validate_agent_variant(agent_variant)
     if settings.app_runtime_mode == "cloud":
         require_cloud_keys(settings)
 
@@ -319,13 +365,26 @@ async def build_rag_runtime_async(
                 settings.deepseek_api_key,
                 settings.deepseek_base_url,
                 model=settings.deepseek_model,
+                max_tokens=settings.deepseek_structured_max_tokens,
+                max_tokens_limit=settings.deepseek_answer_max_tokens,
                 transport=transport,
+                max_retries=(
+                    0
+                    if getattr(settings, "answer_workflow", "baseline_v1")
+                    == "agent_workflow_v2a"
+                    else 3
+                ),
                 max_stream_bytes=settings.deepseek_stream_max_bytes,
                 max_stream_chars=settings.deepseek_stream_max_chars,
                 max_stream_events=settings.deepseek_stream_max_events,
                 stream_timeout_seconds=settings.deepseek_stream_timeout_seconds,
             )
         acquired.append(deepseek)
+        lexical_index = (
+            ActiveLexicalIndex(document_runtime.vector_store)
+            if settings.retrieval_strategy in {"hybrid", "hybrid_normalized"}
+            else None
+        )
         retrieval = RetrievalService(
             repository=document_runtime.repository,
             vector_store=document_runtime.vector_store,
@@ -334,21 +393,82 @@ async def build_rag_runtime_async(
             retrieval_limit=settings.retrieval_limit,
             rerank_limit=settings.rerank_limit,
             relevance_threshold=settings.relevance_threshold,
+            retrieval_strategy=settings.retrieval_strategy,
+            lexical_index=lexical_index,
+            fusion_profile=settings.retrieval_fusion_profile,
+            vector_weight=settings.vector_rrf_weight,
+            lexical_weight=settings.lexical_rrf_weight,
+            diagnostic_trace=settings.retrieval_diagnostic_trace,
+            # Demo assets are fictional and intentionally have no operator
+            # metadata-management step.  Keep the exception explicit and
+            # runtime-scoped; cloud/real-document mode remains fail-closed.
+            require_business_eligibility=settings.app_runtime_mode != "demo",
         )
+        candidate_workflow = (
+            getattr(settings, "answer_workflow", "baseline_v1")
+            == "agent_workflow_v2a"
+        )
+        answer_kwargs = {
+            "deepseek": deepseek,
+            "max_answer_bytes": settings.deepseek_stream_max_bytes,
+            "max_answer_chars": settings.deepseek_stream_max_chars,
+            "max_answer_events": settings.deepseek_stream_max_events,
+            "answer_timeout_seconds": settings.deepseek_stream_timeout_seconds,
+            "prompt_profile": settings.answer_prompt_profile,
+            "answer_max_tokens": settings.deepseek_answer_max_tokens,
+            "answer_thinking_mode": settings.deepseek_answer_thinking_mode,
+        }
         verifier = (
             DeepSeekClaimVerifier(deepseek)
             if settings.stage_b_verification_enabled
             else None
         )
-        answerer = AnswerService(
-            deepseek=deepseek,
-            verifier=verifier,
-            max_answer_bytes=settings.deepseek_stream_max_bytes,
-            max_answer_chars=settings.deepseek_stream_max_chars,
-            max_answer_events=settings.deepseek_stream_max_events,
-            answer_timeout_seconds=settings.deepseek_stream_timeout_seconds,
+        answerer = AnswerService(verifier=verifier, **answer_kwargs)
+        service: Any = RagService(
+            retrieval=retrieval,
+            answerer=answerer,
+            diagnostic_trace=settings.retrieval_diagnostic_trace,
         )
-        service = RagService(retrieval=retrieval, answerer=answerer)
+        workflow: AgentWorkflow | None = None
+        if candidate_workflow:
+            direct_answerer = AnswerService(verifier=None, **answer_kwargs)
+            if settings.app_runtime_mode == "demo":
+                candidate_router = DeterministicRouter()
+                candidate_verifier = DeterministicVerifier()
+            else:
+                candidate_router = DeepSeekRouter(deepseek)
+                candidate_verifier = DeepSeekClaimVerifier(deepseek)
+            verify_answerer = AnswerService(
+                verifier=candidate_verifier, **answer_kwargs
+            )
+            direct_service = RagService(
+                retrieval=retrieval,
+                answerer=direct_answerer,
+                diagnostic_trace=settings.retrieval_diagnostic_trace,
+            )
+            verify_service = RagService(
+                retrieval=retrieval,
+                answerer=verify_answerer,
+                diagnostic_trace=settings.retrieval_diagnostic_trace,
+            )
+            selected_direct_service, selected_verify_service = build_agent_services(
+                candidate_variant,
+                direct_service=direct_service,
+                verify_service=verify_service,
+            )
+            workflow = AgentWorkflow(
+                router=candidate_router,
+                direct_service=selected_direct_service,
+                verify_service=selected_verify_service,
+                baseline_service=service,
+                variant=candidate_variant,
+                repository=(
+                    document_runtime.repository
+                    if settings.app_runtime_mode != "demo"
+                    else None
+                ),
+            )
+            service = workflow
         history_builder = HistoryContextBuilder(
             max_turns=settings.chat_history_max_turns,
             max_chars=settings.chat_history_max_chars,
@@ -371,6 +491,7 @@ async def build_rag_runtime_async(
             rewriter,
             history_builder,
             orchestrator,
+            workflow,
         )
     except BaseException:
         for resource in reversed(acquired):
@@ -429,7 +550,6 @@ async def build_evaluation_runtime_async(
         deepseek_client=None,
         transport=transport,
     )
-
     def active_source_snapshot() -> Any:
         active_versions = document_runtime.repository.active_version_ids()
         snapshot = getattr(document_runtime.vector_store, "snapshot_active_chunks", None)
@@ -444,6 +564,7 @@ async def build_evaluation_runtime_async(
         source_provider=active_source_snapshot,
         rag_service=rag_service,
         storage_dir=Path(settings.private_data_dir) / "evaluations",
+        diagnostic_trace=settings.retrieval_diagnostic_trace,
     )
     owned_clients: list[Any] = []
     generators = getattr(generator, "generators", (generator,))
@@ -495,11 +616,20 @@ def create_app(
     rag_service: Any | None = None,
     chat_orchestrator: ChatOrchestrator | None = None,
     evaluation_service: Any | None = None,
+    feedback_review_service: Any | None = None,
+    evidence_resolver: Any | None = None,
 ) -> FastAPI:
     """Create the API app; local resources are opened only during lifespan."""
 
     selected = settings or Settings()
     configure_logging()
+    owned_feedback_repository: FeedbackProjectionRepository | None = None
+    if selected.feedback_review_ui_enabled and feedback_review_service is None:
+        owned_feedback_repository = FeedbackProjectionRepository(
+            Path(selected.private_data_dir) / "feedback" / "feedback.db"
+        )
+        feedback_review_service = FeedbackReviewService(owned_feedback_repository)
+
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         runtime = document_runtime
@@ -522,6 +652,13 @@ def create_app(
                 application.state.chat_repository = getattr(
                     runtime, "repository", None
                 )
+                if (
+                    selected.feedback_review_ui_enabled
+                    and application.state.feedback_evidence_resolver is None
+                ):
+                    application.state.feedback_evidence_resolver = LocalEvidenceResolver(
+                        runtime.vector_store
+                    )
             if (
                 evaluation_service is None
                 and runtime is not None
@@ -548,6 +685,8 @@ def create_app(
                     await rag_runtime.close()
                 elif runtime is not None:
                     await runtime.close()
+                if owned_feedback_repository is not None:
+                    owned_feedback_repository.close()
 
     app = FastAPI(
         title="Medical Knowledge Q&A Assistant",
@@ -567,6 +706,9 @@ def create_app(
     )
     app.state.evaluation_service = evaluation_service
     app.state.evaluation_runtime = None
+    app.state.feedback_review_ui_enabled = selected.feedback_review_ui_enabled
+    app.state.feedback_review_service = feedback_review_service
+    app.state.feedback_evidence_resolver = evidence_resolver
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(selected.cors_origins()),
@@ -578,6 +720,7 @@ def create_app(
     app.include_router(create_documents_router())
     app.include_router(create_chat_router())
     app.include_router(create_evaluations_router())
+    app.include_router(create_feedback_review_router())
     # ``get_settings`` is used by the reusable health router, while each app
     # instance receives its own immutable selection for deterministic tests and
     # to avoid stale cached environment values between local processes.

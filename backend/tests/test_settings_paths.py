@@ -16,6 +16,7 @@ def test_relative_storage_paths_are_resolved_from_backend_directory() -> None:
     assert settings.private_data_dir == PROJECT_ROOT / "data/private"
     assert settings.qdrant_path == PROJECT_ROOT / "data/qdrant"
     assert settings.sqlite_path == PROJECT_ROOT / "data/app.sqlite3"
+    assert settings.retrieval_strategy == "vector"
 
 
 def test_absolute_storage_paths_are_not_rebased(tmp_path: Path) -> None:

@@ -520,7 +520,11 @@ async def test_hardlink_added_after_open_is_rejected_before_provider_call(
 
 @pytest.mark.asyncio
 async def test_sync_ocr_is_bounded_without_blocking_request_deadline(
-    tmp_path: Path, repository, vector_store: FakeVectorStore, embedder: FakeEmbedder
+    tmp_path: Path,
+    repository,
+    vector_store: FakeVectorStore,
+    embedder: FakeEmbedder,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     from time import monotonic
 
@@ -528,6 +532,13 @@ async def test_sync_ocr_is_bounded_without_blocking_request_deadline(
 
     policy_path = tmp_path / "slow-ocr.pdf"
     _write_blank_pdf(policy_path)
+    # Keep the deadline assertion focused on the synchronous OCR adapter.
+    # PyMuPDF's first render can exceed a 200 ms budget on a cold Windows
+    # process, which would otherwise make this test depend on renderer startup.
+    monkeypatch.setattr(
+        "app.ingestion.service._render_ocr_page",
+        lambda *args: b"rendered-page",
+    )
     ocr = BlockingSyncOcr()
     service = IngestionService(
         repository,
@@ -825,4 +836,3 @@ async def test_cleanup_failure_remains_managed_and_never_activates(
     assert result.status == "failed"
     assert repository.get_active(policy_path.name) is None
     assert vector_store.deleted == [result.version_id]
-

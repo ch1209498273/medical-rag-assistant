@@ -398,3 +398,98 @@ async def test_partial_grounded_answer_gets_a_separate_unverified_reference():
     assert events[-1].data["reference_answer"] == "通用参考答案"
     assert repository.last_assistant.content == "资料可确认应先申请。"
     assert repository.last_assistant.reference_answer == "通用参考答案"
+
+
+@pytest.mark.asyncio
+async def test_candidate_error_summary_is_validated_then_persisted_as_one_terminal():
+    class CandidateRag:
+        requires_request_scope = True
+
+        async def stream(self, question):
+            yield ChatEvent(type="status", data={"stage": "routing"})
+            yield ChatEvent(
+                type="error",
+                data={
+                    "stage": "routing",
+                    "reason_code": "ROUTER_UNAVAILABLE",
+                    "workflow_summary": {
+                        "workflow_version": "agent_workflow_v2a",
+                        "run_id": "0123456789abcdef",
+                        "route": None,
+                        "outcome": "error",
+                        "verifier_status": "not_run",
+                        "http_calls": 1,
+                        "elapsed_ms": 2,
+                        "reason_code": "ROUTER_UNAVAILABLE",
+                    },
+                    "reference_allowed": False,
+                },
+            )
+
+    repository = FakeRepository()
+    orchestrator = ChatOrchestrator(repository, FakeRewriter(), CandidateRag())
+
+    events = [event async for event in orchestrator.stream("问题")]
+
+    assert [event.type for event in events] == ["status", "status", "error"]
+    assert events[-1].data["reason_code"] == "ROUTER_UNAVAILABLE"
+    assert repository.last_assistant.status == "error"
+
+
+@pytest.mark.asyncio
+async def test_candidate_timeout_is_safe_terminal_and_does_not_fake_answer():
+    class TimeoutRag:
+        requires_request_scope = True
+
+        async def stream(self, question):
+            raise TimeoutError
+            yield  # pragma: no cover - keeps this function an async generator
+
+    repository = FakeRepository()
+    orchestrator = ChatOrchestrator(repository, FakeRewriter(), TimeoutRag())
+
+    events = [event async for event in orchestrator.stream("问题")]
+
+    assert events[-1].type == "error"
+    assert events[-1].data["reason_code"] == "WORKFLOW_TIMEOUT"
+    assert repository.last_assistant.status == "error"
+
+
+@pytest.mark.asyncio
+async def test_candidate_verification_failure_cannot_trigger_reference_generation():
+    class CandidateRag:
+        requires_request_scope = True
+
+        async def stream(self, question):
+            yield ChatEvent(
+                type="final",
+                data={
+                    "refused": True,
+                    "citations": [],
+                    "reason_code": "ANSWER_NOT_VERIFIABLE",
+                    "workflow_summary": {
+                        "workflow_version": "agent_workflow_v2a",
+                        "run_id": "0123456789abcdef",
+                        "route": "verify",
+                        "outcome": "refused",
+                        "verifier_status": "failed",
+                        "http_calls": 5,
+                        "elapsed_ms": 2,
+                        "reason_code": "ANSWER_NOT_VERIFIABLE",
+                    },
+                    "reference_allowed": False,
+                },
+            )
+
+    repository = FakeRepository()
+    reference = FakeReferenceGenerator()
+    orchestrator = ChatOrchestrator(
+        repository, FakeRewriter(), CandidateRag(), reference_generator=reference
+    )
+
+    events = [event async for event in orchestrator.stream("复杂问题")]
+
+    assert events[-1].type == "final"
+    assert events[-1].data["refused"] is True
+    assert "reference_answer" not in events[-1].data
+    assert reference.questions == []

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import pytest
+
 from app.domain.models import Chunk, SourceRef
-from app.domain.ports import SearchHit
+from app.domain.ports import EligibilityResult, SearchHit
 from app.providers.siliconflow import RankedItem
 from app.rag.retrieval import RetrievalService
 
@@ -10,6 +11,11 @@ from app.rag.retrieval import RetrievalService
 class FakeRepository:
     def active_version_ids(self) -> set[str]:
         return {"v1"}
+
+
+class EligibleRepository(FakeRepository):
+    def eligible_version_ids(self, audience_scope, as_of):
+        return EligibilityResult(frozenset({"v1"}), None)
 
 
 class FakeVectorStore:
@@ -69,6 +75,21 @@ def make_retrieval(hits, scores=None):
     return service, vector_store, cloud
 
 
+def make_eligible_retrieval(hits):
+    vector_store = FakeVectorStore(hits)
+    cloud = FakeCloud()
+    service = RetrievalService(
+        repository=EligibleRepository(),
+        vector_store=vector_store,
+        embedder=cloud,
+        reranker=cloud,
+        retrieval_limit=20,
+        rerank_limit=6,
+        relevance_threshold=0.35,
+    )
+    return service, vector_store, cloud
+
+
 @pytest.mark.asyncio
 async def test_retrieval_recalls_20_then_deduplicates_and_reranks_to_6():
     service, vector_store, cloud = make_retrieval(
@@ -84,6 +105,15 @@ async def test_retrieval_recalls_20_then_deduplicates_and_reranks_to_6():
     assert [item.reference_id for item in result.evidence] == [
         "S1", "S2", "S3", "S4", "S5", "S6"
     ]
+
+
+@pytest.mark.asyncio
+async def test_retrieval_uses_business_eligible_allowlist_when_repository_provides_one():
+    service, vector_store, _ = make_eligible_retrieval([make_hit(0, "正式制度")])
+
+    await service.retrieve("制度流程")
+
+    assert vector_store.active_versions == {"v1"}
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,8 @@ import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 
+from app.domain.ports import AudienceScope, FeedbackReason
+
 SAFE_REASON_CODES = frozenset(
     {
         "INSUFFICIENT_EVIDENCE",
@@ -17,6 +19,18 @@ SAFE_REASON_CODES = frozenset(
         "CHAT_UNAVAILABLE",
         "INVALID_EVENT",
         "PROVIDER_UNAVAILABLE",
+        "EVIDENCE_SCOPE_UNCLEAR",
+        "DOCUMENT_BUSINESS_STATUS_UNKNOWN",
+        "PROVIDER_TIMEOUT",
+        "PROVIDER_TRANSPORT_ERROR",
+        "PROVIDER_SCHEMA_INVALID",
+        "OUTPUT_TRUNCATED",
+        "ROUTER_UNAVAILABLE",
+        "WORKFLOW_BUDGET_EXCEEDED",
+        "WORKFLOW_UNAVAILABLE",
+        "WORKFLOW_TIMEOUT",
+        "QUESTION_NEEDS_CLARIFICATION",
+        "OUT_OF_SCOPE",
     }
 )
 REFERENCE_REASON_CODES = frozenset({"INSUFFICIENT_EVIDENCE", "ANSWER_NOT_VERIFIABLE"})
@@ -24,6 +38,7 @@ REFERENCE_REASON_CODES = frozenset({"INSUFFICIENT_EVIDENCE", "ANSWER_NOT_VERIFIA
 _REFERENCE_ID = re.compile(r"^S[1-6]$")
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _SAFE_BASENAME = re.compile(r"^[^<>:\"/\\|?*\x00-\x1f]+\.(?:pdf|docx)$", re.IGNORECASE)
+_SAFE_TABLE_ID = re.compile(r"^table-[1-9]\d*$")
 _SAFE_TIMESTAMP = re.compile(
     r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}"
     r"(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})?$"
@@ -62,6 +77,7 @@ _CITATION_KEYS = frozenset(
         "page_end",
         "paragraph_start",
         "paragraph_end",
+        "table_id",
         "excerpt",
     }
 )
@@ -92,6 +108,9 @@ SAFE_FAILURE_REASONS = frozenset(
 SAFE_ERROR_TEXT = "当前服务暂时不可用，请稍后重试。"
 SAFE_CORRUPTED_MESSAGE_TEXT = "当前会话记录无法安全恢复。"
 SAFE_EPOCH = "1970-01-01 00:00:00"
+SAFE_FEEDBACK_REASONS = frozenset(
+    {"not_answered", "missing_step", "version_mismatch", "citation_mismatch", "too_slow"}
+)
 
 
 def validate_reason_code(value: object, *, allow_none: bool = False) -> str | None:
@@ -102,6 +121,37 @@ def validate_reason_code(value: object, *, allow_none: bool = False) -> str | No
     if not isinstance(value, str) or value not in SAFE_REASON_CODES:
         raise ValueError("reason_code is not allowed")
     return value
+
+
+def normalize_workflow_summary(value: object) -> dict[str, object] | None:
+    """Validate the fixed workflow facts before they reach history or SSE."""
+
+    if value is None:
+        return None
+    try:
+        from app.agents.contracts import WorkflowSummary
+
+        summary = WorkflowSummary.model_validate(value)
+        validate_reason_code(summary.reason_code, allow_none=True)
+    except (TypeError, ValueError):
+        raise ValueError("workflow summary is not allowed") from None
+    return summary.model_dump()
+
+
+def validate_audience_scope(value: object) -> AudienceScope:
+    if value not in {"unspecified", "all_staff", "nurse", "doctor", "pharmacist", "administrator"}:
+        raise ValueError("audience_scope is invalid")
+    return value  # type: ignore[return-value]
+
+
+def validate_feedback_reason(
+    value: object, *, allow_none: bool = True
+) -> FeedbackReason | None:
+    if value is None and allow_none:
+        return None
+    if not isinstance(value, str) or value not in SAFE_FEEDBACK_REASONS:
+        raise ValueError("feedback reason is not allowed")
+    return value  # type: ignore[return-value]
 
 
 def is_safe_reference_id(value: object) -> bool:
@@ -199,6 +249,14 @@ def validate_citation(value: object) -> dict[str, object]:
         locations[key] = item
         result[key] = item
 
+    table_id = value.get("table_id")
+    if table_id is not None and (
+        not isinstance(table_id, str) or _SAFE_TABLE_ID.fullmatch(table_id) is None
+    ):
+        raise ValueError("citation table_id is invalid")
+    if table_id is not None:
+        result["table_id"] = table_id
+
     suffix = file_name.casefold()
     if suffix.endswith(".pdf"):
         if not _valid_range(locations["page"], locations["page_end"]):
@@ -206,10 +264,11 @@ def validate_citation(value: object) -> dict[str, object]:
         if locations["paragraph_start"] is not None or locations["paragraph_end"] is not None:
             raise ValueError("pdf citation must not contain paragraph range")
     elif suffix.endswith(".docx"):
-        if not _valid_range(
-            locations["paragraph_start"], locations["paragraph_end"]
+        if not (
+            _valid_range(locations["paragraph_start"], locations["paragraph_end"])
+            or table_id is not None
         ):
-            raise ValueError("docx citation paragraph range is required")
+            raise ValueError("docx citation paragraph range or table_id is required")
         if locations["page"] is not None or locations["page_end"] is not None:
             raise ValueError("docx citation must not contain page range")
     else:
@@ -345,6 +404,8 @@ def normalize_chat_message(
         "created_at",
         "reply_to_message_id",
         "reference_answer",
+        "audience_scope",
+        "workflow_summary",
     )
     raw = _record(value, fields) or {}
     safe_session = (
@@ -392,6 +453,8 @@ def normalize_chat_message(
             or not is_safe_answer_text(reference_answer)
         ):
             raise ValueError("reference answer is unsafe")
+        audience_scope = validate_audience_scope(raw.get("audience_scope", "unspecified"))
+        workflow_summary = normalize_workflow_summary(raw.get("workflow_summary"))
         rewritten = raw.get("rewritten_question")
         if rewritten is not None and (
             role != "user"
@@ -409,6 +472,7 @@ def normalize_chat_message(
                 or reason_code is not None
                 or reply_to is not None
                 or reference_answer is not None
+                or workflow_summary is not None
             ):
                 raise ValueError("user message metadata is invalid")
             if not is_safe_id(safe_message_id):
@@ -442,6 +506,8 @@ def normalize_chat_message(
             created_at=str(raw["created_at"]),
             reply_to_message_id=reply_to,
             reference_answer=reference_answer,
+            audience_scope=audience_scope,
+            workflow_summary=workflow_summary,
         )
     except (TypeError, ValueError):
         return ChatMessage(
@@ -463,7 +529,7 @@ def normalize_chat_message(
 
 
 def normalize_feedback(value: object) -> dict[str, object] | None:
-    fields = ("message_id", "helpful", "created_at")
+    fields = ("message_id", "helpful", "created_at", "reason")
     raw = _record(value, fields)
     if raw is None:
         return None
@@ -476,10 +542,17 @@ def normalize_feedback(value: object) -> dict[str, object] | None:
         safe_helpful = bool(helpful)
     else:
         return None
+    try:
+        reason = validate_feedback_reason(raw.get("reason"), allow_none=True)
+    except ValueError:
+        return None
+    if safe_helpful and reason is not None:
+        return None
     return {
         "message_id": raw["message_id"],
         "helpful": safe_helpful,
         "created_at": raw["created_at"],
+        "reason": reason,
     }
 
 
@@ -501,8 +574,10 @@ __all__ = [
     "normalize_chat_message",
     "normalize_citation_excerpt",
     "normalize_feedback",
+    "normalize_workflow_summary",
     "validate_candidate_sources",
     "validate_citation",
     "validate_citations",
+    "validate_feedback_reason",
     "validate_reason_code",
 ]

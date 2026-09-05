@@ -131,6 +131,7 @@ def _merge_source_refs(first: SourceRef, last: SourceRef) -> SourceRef:
             first.paragraph_end or first.paragraph_start,
             last.paragraph_end or last.paragraph_start,
         ),
+        table_id=first.table_id if first.table_id == last.table_id else None,
     )
 
 

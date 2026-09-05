@@ -2,26 +2,45 @@
 
 from __future__ import annotations
 
+import inspect
 import math
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
+from app.agents.budget import (
+    RequestBudget,
+    WorkflowBudgetExceeded,
+    current_budget,
+    request_scope,
+    stage_scope,
+)
 from app.chat.history import HistoryContextBuilder
 from app.chat.safety import (
     REFERENCE_REASON_CODES,
     SAFE_ERROR_TEXT,
     is_safe_answer_text,
     is_safe_reference_id,
+    normalize_workflow_summary,
+    validate_audience_scope,
     validate_candidate_sources,
     validate_citations,
     validate_reason_code,
 )
+from app.domain.ports import AudienceScope
 from app.rag.models import ChatEvent
-from app.rag.retrieval import clean_question
+from app.rag.query import clean_question
 
 _RAG_EVENT_TYPES = frozenset({"status", "answer_delta", "final", "error"})
 _STATUS_STAGES = frozenset(
-    {"retrieving", "reranking", "generating", "validating"}
+    {
+        "preflight",
+        "routing",
+        "retrieving",
+        "reranking",
+        "generating",
+        "validating",
+        "verifying",
+    }
 )
 _RETRIEVAL_DIAGNOSTIC_FIELDS = frozenset(
     {
@@ -34,7 +53,12 @@ _RETRIEVAL_DIAGNOSTIC_FIELDS = frozenset(
 )
 _RETRIEVAL_STATUSES = frozenset({"ready", "refused", "unavailable"})
 _RETRIEVAL_REASON_CODES = frozenset(
-    {"INSUFFICIENT_EVIDENCE", "RETRIEVAL_UNAVAILABLE"}
+    {
+        "INSUFFICIENT_EVIDENCE",
+        "RETRIEVAL_UNAVAILABLE",
+        "EVIDENCE_SCOPE_UNCLEAR",
+        "DOCUMENT_BUSINESS_STATUS_UNKNOWN",
+    }
 )
 _REASON_CODES = frozenset(
     {
@@ -71,11 +95,37 @@ class ChatOrchestrator:
         self.reference_generator = reference_generator
 
     async def stream(
-        self, question: str, session_id: str | None = None
+        self,
+        question: str,
+        session_id: str | None = None,
+        *,
+        audience_scope: AudienceScope = "unspecified",
+    ) -> AsyncIterator[ChatEvent]:
+        """Stream one request, adding a budget only for the candidate workflow."""
+
+        if getattr(self.rag_service, "requires_request_scope", False) and current_budget() is None:
+            async with request_scope(RequestBudget()):
+                async for event in self._stream_legacy(
+                    question, session_id, audience_scope=audience_scope
+                ):
+                    yield event
+            return
+        async for event in self._stream_legacy(
+            question, session_id, audience_scope=audience_scope
+        ):
+            yield event
+
+    async def _stream_legacy(
+        self,
+        question: str,
+        session_id: str | None = None,
+        *,
+        audience_scope: AudienceScope = "unspecified",
     ) -> AsyncIterator[ChatEvent]:
         """Stream safe events while ensuring every terminal result is stored."""
 
         cleaned_question = clean_question(question)
+        audience_scope = validate_audience_scope(audience_scope)
         if session_id is None:
             session_id = self.repository.create_chat_session()
         elif not isinstance(session_id, str) or not session_id.strip():
@@ -83,7 +133,12 @@ class ChatOrchestrator:
         elif not self.repository.chat_session_exists(session_id):
             raise KeyError(f"Unknown chat session: {session_id}")
 
-        user_message = self.repository.append_user_message(session_id, cleaned_question)
+        user_message = _append_user_message(
+            self.repository,
+            session_id,
+            cleaned_question,
+            audience_scope,
+        )
         yield ChatEvent(
             type="status",
             data={
@@ -103,9 +158,10 @@ class ChatOrchestrator:
                 data={"stage": "rewriting", "session_id": session_id},
             )
             try:
-                effective_question = await self.rewriter.rewrite(
-                    cleaned_question, history
-                )
+                with stage_scope("rewriting"):
+                    effective_question = await self.rewriter.rewrite(
+                        cleaned_question, history
+                    )
                 effective_question = clean_question(effective_question)
                 self.repository.set_rewritten_question(
                     user_message.message_id, effective_question
@@ -129,7 +185,12 @@ class ChatOrchestrator:
         answer_parts: list[str] = []
         terminal = False
         try:
-            async for event in self.rag_service.stream(effective_question):
+            rag_stream = _stream_with_optional_audience(
+                self.rag_service,
+                effective_question,
+                audience_scope,
+            )
+            async for event in rag_stream:
                 if not isinstance(event, ChatEvent) or event.type not in _RAG_EVENT_TYPES:
                     assistant = self._persist_error(
                         session_id, user_message.message_id, "INVALID_EVENT"
@@ -197,12 +258,41 @@ class ChatOrchestrator:
                 reason_code = event.data["reason_code"]
                 if not isinstance(reason_code, str):
                     raise TypeError("validated reason code is not text")
-                assistant = self._persist_error(session_id, user_message.message_id, reason_code)
+                workflow_summary = event.data.get("workflow_summary")
+                assistant = self._persist_error(
+                    session_id,
+                    user_message.message_id,
+                    reason_code,
+                    workflow_summary=workflow_summary,
+                )
                 terminal = True
                 yield self._error_event(
-                    session_id, assistant.message_id, reason_code
+                    session_id,
+                    assistant.message_id,
+                    reason_code,
+                    workflow_summary=workflow_summary,
                 )
                 return
+        except TimeoutError:
+            if not terminal:
+                assistant = self._persist_error(
+                    session_id, user_message.message_id, "WORKFLOW_TIMEOUT"
+                )
+                yield self._error_event(
+                    session_id, assistant.message_id, "WORKFLOW_TIMEOUT"
+                )
+                return
+            raise
+        except WorkflowBudgetExceeded:
+            if not terminal:
+                assistant = self._persist_error(
+                    session_id, user_message.message_id, "WORKFLOW_BUDGET_EXCEEDED"
+                )
+                yield self._error_event(
+                    session_id, assistant.message_id, "WORKFLOW_BUDGET_EXCEEDED"
+                )
+                return
+            raise
         except Exception:
             if not terminal:
                 assistant = self._persist_error(
@@ -250,21 +340,32 @@ class ChatOrchestrator:
         status = "refused" if refused else "answered"
         content = _REFUSED_TEXT if refused else "".join(answer_parts)
         reference_question = data.get("reference_question")
+        reference_allowed = data.get("reference_allowed", True)
+        if not isinstance(reference_allowed, bool):
+            reference_allowed = False
         reference_answer: str | None = None
         if (
-            (
+            reference_allowed
+            and (
                 isinstance(reference_question, str)
                 or (refused and safe_reason in REFERENCE_REASON_CODES)
             )
             and self.reference_generator is not None
         ):
             try:
-                reference_answer = await self.reference_generator.generate(
-                    reference_question if isinstance(reference_question, str) else question
-                )
+                with stage_scope("reference"):
+                    reference_answer = await self.reference_generator.generate(
+                        reference_question if isinstance(reference_question, str) else question
+                    )
+            except WorkflowBudgetExceeded:
+                raise
             except Exception:  # noqa: BLE001 - optional enrichment must not fail chat
                 reference_answer = None
-        assistant = self.repository.append_assistant_message(
+        workflow_summary = data.get("workflow_summary")
+        if workflow_summary is not None:
+            workflow_summary = _validate_workflow_summary(workflow_summary)
+        assistant = _append_assistant_message(
+            self.repository,
             session_id,
             user_message_id,
             content,
@@ -272,6 +373,7 @@ class ChatOrchestrator:
             [] if refused else [dict(item) for item in citations],
             safe_reason,
             reference_answer,
+            workflow_summary,
         )
         final_data: dict[str, object] = {
             "refused": refused,
@@ -283,16 +385,33 @@ class ChatOrchestrator:
             final_data["reason_code"] = safe_reason
         if reference_answer is not None:
             final_data["reference_answer"] = reference_answer
+        if workflow_summary is not None:
+            final_data["workflow_summary"] = workflow_summary
         return assistant, ChatEvent(type="final", data=final_data)
 
-    def _persist_error(self, session_id: str, user_message_id: str, reason_code: str) -> Any:
-        return self.repository.append_assistant_message(
+    def _persist_error(
+        self,
+        session_id: str,
+        user_message_id: str,
+        reason_code: str,
+        *,
+        workflow_summary: object | None = None,
+    ) -> Any:
+        summary = (
+            _validate_workflow_summary(workflow_summary)
+            if workflow_summary is not None
+            else None
+        )
+        return _append_assistant_message(
+            self.repository,
             session_id,
             user_message_id,
             _ERROR_TEXT,
             "error",
             (),
             reason_code,
+            None,
+            summary,
         )
 
     @staticmethod
@@ -326,6 +445,8 @@ class ChatOrchestrator:
                     "reason_code",
                     "reference_question",
                     "retrieval_diagnostics",
+                    "workflow_summary",
+                    "reference_allowed",
                 }
             ):
                 return None
@@ -347,6 +468,15 @@ class ChatOrchestrator:
                 if diagnostics is None:
                     return None
                 result["retrieval_diagnostics"] = diagnostics
+            if "workflow_summary" in data:
+                summary = _validate_workflow_summary(data["workflow_summary"])
+                if summary is None:
+                    return None
+                result["workflow_summary"] = summary
+            if "reference_allowed" in data:
+                if not isinstance(data["reference_allowed"], bool):
+                    return None
+                result["reference_allowed"] = data["reference_allowed"]
             if reason_code is not None:
                 result["reason_code"] = reason_code
             reference_question = data.get("reference_question")
@@ -360,7 +490,14 @@ class ChatOrchestrator:
             return result
         if event.type == "error":
             if not set(data).issubset(
-                {"stage", "reason_code", "candidate_sources", "retrieval_diagnostics"}
+                {
+                    "stage",
+                    "reason_code",
+                    "candidate_sources",
+                    "retrieval_diagnostics",
+                    "workflow_summary",
+                    "reference_allowed",
+                }
             ):
                 return None
             stage = data.get("stage", "chat")
@@ -385,21 +522,42 @@ class ChatOrchestrator:
                 if diagnostics is None:
                     return None
                 result["retrieval_diagnostics"] = diagnostics
+            if "workflow_summary" in data:
+                summary = _validate_workflow_summary(data["workflow_summary"])
+                if summary is None:
+                    return None
+                result["workflow_summary"] = summary
+            if "reference_allowed" in data:
+                if not isinstance(data["reference_allowed"], bool):
+                    return None
+                result["reference_allowed"] = data["reference_allowed"]
             return result
         return None
 
     @staticmethod
     def _error_event(
-        session_id: str, message_id: str, reason_code: str
+        session_id: str,
+        message_id: str,
+        reason_code: str,
+        *,
+        workflow_summary: object | None = None,
     ) -> ChatEvent:
+        summary = (
+            _validate_workflow_summary(workflow_summary)
+            if workflow_summary is not None
+            else None
+        )
+        data: dict[str, object] = {
+            "stage": "chat",
+            "reason_code": reason_code,
+            "session_id": session_id,
+            "message_id": message_id,
+        }
+        if summary is not None:
+            data["workflow_summary"] = summary
         return ChatEvent(
             type="error",
-            data={
-                "stage": "chat",
-                "reason_code": reason_code,
-                "session_id": session_id,
-                "message_id": message_id,
-            },
+            data=data,
         )
 
 
@@ -409,6 +567,106 @@ def _safe_reason_code(value: object, *, fallback: str = "CHAT_UNAVAILABLE") -> s
     except (TypeError, ValueError):
         return fallback
     return normalized
+
+
+def _validate_workflow_summary(value: object) -> dict[str, object] | None:
+    try:
+        return normalize_workflow_summary(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _append_assistant_message(
+    repository: Any,
+    session_id: str,
+    reply_to_message_id: str,
+    content: str,
+    status: str,
+    citations: object,
+    reason_code: str | None,
+    reference_answer: str | None = None,
+    workflow_summary: Mapping[str, object] | None = None,
+) -> Any:
+    """Pass optional workflow facts while retaining old repository fakes."""
+
+    method = repository.append_assistant_message
+    args = [
+        session_id,
+        reply_to_message_id,
+        content,
+        status,
+        citations,
+        reason_code,
+    ]
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "workflow_summary" in parameters:
+        return method(
+            *args,
+            reference_answer=reference_answer,
+            workflow_summary=workflow_summary,
+        )
+    if any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    ):
+        return method(
+            *args,
+            reference_answer=reference_answer,
+            workflow_summary=workflow_summary,
+        )
+    if reference_answer is not None:
+        return method(*args, reference_answer=reference_answer)
+    return method(*args)
+
+
+def _append_user_message(
+    repository: Any,
+    session_id: str,
+    question: str,
+    audience_scope: AudienceScope,
+) -> Any:
+    """Pass the new scope field while retaining compatibility with old fakes."""
+
+    method = repository.append_user_message
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return method(session_id, question)
+    audience = parameters.get("audience_scope")
+    if audience is not None and audience.kind is inspect.Parameter.POSITIONAL_ONLY:
+        return method(session_id, question, audience_scope)
+    if audience is not None or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    ):
+        return method(session_id, question, audience_scope=audience_scope)
+    return method(session_id, question)
+
+
+def _stream_with_optional_audience(
+    service: Any,
+    question: str,
+    audience_scope: AudienceScope,
+):
+    """Call audience-aware RAG services without breaking legacy injections."""
+
+    method = service.stream
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return method(question)
+    audience = parameters.get("audience_scope")
+    if audience is not None and audience.kind is inspect.Parameter.POSITIONAL_ONLY:
+        return method(question, audience_scope)
+    if audience is not None or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    ):
+        return method(question, audience_scope=audience_scope)
+    return method(question)
 
 
 def _validate_retrieval_diagnostics(

@@ -43,6 +43,17 @@ def test_validate_citations_allows_dialysis_slash_excerpt():
     assert citations[0]["excerpt"] == excerpt
 
 
+def test_validate_citations_accepts_docx_table_locator_without_paragraph_range():
+    citation = citation_with_excerpt("表格中的要求")
+    citation["paragraph_start"] = None
+    citation["paragraph_end"] = None
+    citation["table_id"] = "table-7"
+
+    citations = validate_citations([citation])
+
+    assert citations[0]["table_id"] == "table-7"
+
+
 def test_validate_citations_normalizes_display_whitespace():
     citation = citation_with_excerpt("第一行\r\n第二行\t。")
 

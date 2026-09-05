@@ -206,6 +206,8 @@ class DemoLanguageModel:
         messages: Sequence[Mapping[str, Any]],
         *,
         json_output: bool = False,
+        max_tokens: int | None = None,
+        thinking: Mapping[str, str] | None = None,
     ) -> AsyncIterator[str]:
         """Yield one formal two-field JSON answer for an exact scenario."""
 

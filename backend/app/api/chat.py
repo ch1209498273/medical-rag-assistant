@@ -15,20 +15,39 @@ from app.chat.safety import (
     is_safe_reference_id,
     normalize_chat_message,
     normalize_feedback,
+    normalize_workflow_summary,
     validate_candidate_sources,
     validate_citation,
     validate_citations,
     validate_reason_code,
 )
+from app.domain.ports import AudienceScope, FeedbackReason
 from app.rag.models import ChatEvent
-from app.rag.retrieval import clean_question
+from app.rag.query import clean_question
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    StrictBool,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 _ALLOWED_EVENT_TYPES = frozenset({"status", "answer_delta", "final", "error"})
 _ALLOWED_STATUS_STAGES = frozenset(
-    {"accepted", "rewriting", "retrieving", "reranking", "generating", "validating"}
+    {
+        "accepted",
+        "rewriting",
+        "preflight",
+        "routing",
+        "retrieving",
+        "reranking",
+        "generating",
+        "validating",
+        "verifying",
+    }
 )
 _SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
@@ -38,6 +57,7 @@ class ChatRequest(BaseModel):
 
     question: StrictStr
     session_id: StrictStr | None = None
+    audience_scope: AudienceScope = "unspecified"
 
     @field_validator("session_id")
     @classmethod
@@ -51,6 +71,13 @@ class FeedbackRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     helpful: StrictBool
+    reason: FeedbackReason | None = None
+
+    @model_validator(mode="after")
+    def validate_reason_for_helpful_feedback(self) -> FeedbackRequest:
+        if self.helpful and self.reason is not None:
+            raise ValueError("helpful feedback cannot include a reason")
+        return self
 
 
 def create_chat_router() -> APIRouter:
@@ -75,6 +102,7 @@ def create_chat_router() -> APIRouter:
                     orchestrator,
                     question,
                     payload.session_id,
+                    audience_scope=payload.audience_scope,
                     require_terminal_metadata=True,
                 ),
                 media_type="text/event-stream",
@@ -89,7 +117,7 @@ def create_chat_router() -> APIRouter:
             raise HTTPException(status_code=503, detail="chat service is not configured")
 
         return StreamingResponse(
-            _safe_events(rag_service, question),
+            _safe_events(rag_service, question, audience_scope=payload.audience_scope),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -143,6 +171,8 @@ def create_chat_router() -> APIRouter:
                     "citations": [dict(item) for item in safe_row.citations],
                     "reason_code": safe_row.reason_code,
                     "reference_answer": safe_row.reference_answer,
+                    "audience_scope": safe_row.audience_scope,
+                    "workflow_summary": safe_row.workflow_summary,
                     "created_at": safe_row.created_at,
                     "feedback": _feedback_dict(feedback),
                 }
@@ -157,7 +187,9 @@ def create_chat_router() -> APIRouter:
         if repository is None:
             raise HTTPException(status_code=503, detail="chat service is not configured")
         try:
-            feedback = repository.upsert_feedback(message_id, payload.helpful)
+            feedback = _upsert_feedback_with_optional_reason(
+                repository, message_id, payload.helpful, payload.reason
+            )
             if inspect.isawaitable(feedback):
                 feedback = await feedback
             return _feedback_dict(feedback) or {}
@@ -176,13 +208,16 @@ async def _safe_events(
     question: str,
     session_id: str | None = None,
     *,
+    audience_scope: AudienceScope = "unspecified",
     require_terminal_metadata: bool = False,
 ) -> AsyncIterator[str]:
     try:
-        stream = (
-            service.stream(question, session_id)
-            if require_terminal_metadata
-            else service.stream(question)
+        stream = _stream_with_optional_audience(
+            service,
+            question,
+            session_id,
+            audience_scope,
+            require_terminal_metadata,
         )
         async for event in stream:
             if not isinstance(event, ChatEvent):
@@ -221,6 +256,35 @@ async def _legacy_safe_events(service: Any, question: str) -> AsyncIterator[str]
 
     async for frame in _safe_events(service, question):
         yield frame
+
+
+def _stream_with_optional_audience(
+    service: Any,
+    question: str,
+    session_id: str | None,
+    audience_scope: AudienceScope,
+    require_terminal_metadata: bool,
+):
+    """Call new scope-aware services while preserving legacy test doubles."""
+
+    method = service.stream
+    args: list[object] = [question]
+    if require_terminal_metadata:
+        args.append(session_id)
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return method(*args)
+    audience = parameters.get("audience_scope")
+    if audience is not None and audience.kind is inspect.Parameter.POSITIONAL_ONLY:
+        args.append(audience_scope)
+        return method(*args)
+    if audience is not None or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    ):
+        return method(*args, audience_scope=audience_scope)
+    return method(*args)
 
 
 def _safe_event(event: ChatEvent, *, require_terminal_metadata: bool) -> ChatEvent | None:
@@ -271,11 +335,13 @@ def _safe_event(event: ChatEvent, *, require_terminal_metadata: bool) -> ChatEve
                 "citations",
                 "reason_code",
                 "reference_answer",
-                # Internal evaluation-only metadata is accepted from the
-                # orchestrator and deliberately stripped from public SSE.
+                # Retrieval diagnostics stay internal; the workflow summary
+                # is separately validated and reduced to fixed safe facts.
                 "retrieval_diagnostics",
                 "session_id",
                 "message_id",
+                "workflow_summary",
+                "reference_allowed",
             }
         ):
             return None
@@ -312,6 +378,17 @@ def _safe_event(event: ChatEvent, *, require_terminal_metadata: bool) -> ChatEve
             safe_data["reason_code"] = safe_reason
         if reference_answer is not None:
             safe_data["reference_answer"] = reference_answer
+        if "workflow_summary" in data:
+            try:
+                summary = normalize_workflow_summary(data["workflow_summary"])
+            except (TypeError, ValueError):
+                return None
+            if summary is not None:
+                safe_data["workflow_summary"] = summary
+        if "reference_allowed" in data and not isinstance(
+            data["reference_allowed"], bool
+        ):
+            return None
         if require_terminal_metadata:
             if not _has_ids(data):
                 return None
@@ -335,6 +412,13 @@ def _safe_event(event: ChatEvent, *, require_terminal_metadata: bool) -> ChatEve
             )
         except (TypeError, ValueError):
             return None
+    if "workflow_summary" in data:
+        try:
+            summary = normalize_workflow_summary(data["workflow_summary"])
+        except (TypeError, ValueError):
+            return None
+        if summary is not None:
+            safe_data["workflow_summary"] = summary
     if require_terminal_metadata:
         if not _has_ids(data):
             return None
@@ -373,6 +457,27 @@ def _repository(request: Request, orchestrator: Any | None = None) -> Any | None
 
 def _feedback_dict(value: Any) -> dict[str, object] | None:
     return normalize_feedback(value)
+
+
+def _upsert_feedback_with_optional_reason(
+    repository: Any,
+    message_id: str,
+    helpful: bool,
+    reason: FeedbackReason | None,
+) -> Any:
+    """Call new repositories while preserving old two-argument test doubles."""
+
+    method = repository.upsert_feedback
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return method(message_id, helpful, reason)
+    if len(parameters) >= 3 or any(
+        parameter.kind is inspect.Parameter.VAR_POSITIONAL
+        for parameter in parameters.values()
+    ):
+        return method(message_id, helpful, reason)
+    return method(message_id, helpful)
 
 
 def _encode_sse(event: ChatEvent) -> str:

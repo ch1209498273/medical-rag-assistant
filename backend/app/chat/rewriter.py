@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, StrictStr
 from app.chat.history import MAX_HISTORY_CHARS
 from app.chat.models import HistoryContext
 from app.chat.safety import ABSOLUTE_PATH_RE
-from app.rag.retrieval import clean_question
+from app.rag.query import clean_question
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 _SECRET_TOKEN = re.compile(r"(?i)\b(?:sk|pk)-[A-Za-z0-9_-]+\b")

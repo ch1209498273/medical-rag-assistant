@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import date
 
 import pytest
+
+from app.domain.ports import DocumentBusinessMetadataInput
 from app.storage.sqlite import SqliteDocumentRepository
 
 
@@ -419,7 +422,7 @@ def test_schema_v3_migrates_existing_chat_rows_without_loss(tmp_path):
 
         assert [message.content for message in messages] == ["旧问题"]
         assert repository.list_chat_sessions()[0].title == "旧问题"
-        assert repository.schema_version() == 3
+        assert repository.schema_version() == 8
     finally:
         repository.close()
 
@@ -449,6 +452,144 @@ def test_feedback_upsert_is_idempotent_and_only_allows_final_assistant(repositor
 
     with pytest.raises(ValueError):
         repository.upsert_feedback(user.message_id, True)
+
+
+def test_unhelpful_feedback_persists_controlled_reason_and_opens_bad_case(repository):
+    session_id = repository.create_chat_session()
+    user = repository.append_user_message(session_id, "问题")
+    assistant = repository.append_assistant_message(
+        session_id,
+        user.message_id,
+        "答复",
+        "answered",
+        (),
+        None,
+    )
+
+    feedback = repository.upsert_feedback(
+        assistant.message_id, False, "missing_step"
+    )
+
+    assert feedback.reason == "missing_step"
+    assert repository.list_bad_case_aggregates() == {
+        "USER_FEEDBACK_MISSING_STEP": {"new": 1}
+    }
+
+
+def test_helpful_feedback_rejects_a_feedback_reason(repository):
+    session_id = repository.create_chat_session()
+    user = repository.append_user_message(session_id, "问题")
+    assistant = repository.append_assistant_message(
+        session_id,
+        user.message_id,
+        "答复",
+        "answered",
+        (),
+        None,
+    )
+
+    with pytest.raises(ValueError, match="reason"):
+        repository.upsert_feedback(assistant.message_id, True, "too_slow")
+
+
+def test_bad_case_status_machine_only_allows_adjacent_transitions(repository):
+    session_id = repository.create_chat_session()
+    user = repository.append_user_message(session_id, "问题")
+    assistant = repository.append_assistant_message(
+        session_id,
+        user.message_id,
+        "答复",
+        "answered",
+        (),
+        None,
+    )
+    case = repository.create_bad_case(
+        assistant.message_id, "USER_FEEDBACK_NOT_ANSWERED"
+    )
+
+    with pytest.raises(ValueError, match="invalid transition"):
+        repository.transition_bad_case(case.case_id, "closed")
+
+    for target in ("triaged", "fixed", "regression_checked", "closed"):
+        case = repository.transition_bad_case(case.case_id, target)
+        assert case.status == target
+
+
+def test_v5_feedback_rows_migrate_with_a_nullable_reason(tmp_path):
+    database = tmp_path / "v5-feedback.sqlite3"
+    connection = sqlite3.connect(database)
+    connection.executescript(
+        """
+        CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+        INSERT INTO schema_version(version) VALUES (5);
+        CREATE TABLE documents (document_id INTEGER PRIMARY KEY, file_name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE document_versions (version_id TEXT PRIMARY KEY, document_id INTEGER NOT NULL, sha256 TEXT NOT NULL, status TEXT NOT NULL, failure_reason TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE index_jobs (job_id TEXT PRIMARY KEY, version_id TEXT NOT NULL, status TEXT NOT NULL, error_message TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE chat_sessions (session_id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '新会话', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE messages (message_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'submitted', reply_to_message_id TEXT, rewritten_question TEXT, citations_json TEXT NOT NULL DEFAULT '[]', reason_code TEXT, reference_answer TEXT, audience_scope TEXT NOT NULL DEFAULT 'unspecified', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE feedback (feedback_id TEXT PRIMARY KEY, session_id TEXT, message_id TEXT, helpful INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+        INSERT INTO chat_sessions(session_id) VALUES ('s1');
+        INSERT INTO messages(message_id, session_id, role, content) VALUES ('m1', 's1', 'user', '旧问题');
+        INSERT INTO feedback(feedback_id, session_id, message_id, helpful) VALUES ('f1', 's1', 'm1', 0);
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    repository = SqliteDocumentRepository(database)
+    try:
+        assert repository.schema_version() == 8
+        assert repository.get_feedback("m1").reason is None
+    finally:
+        repository.close()
+
+
+def test_schema_v7_migrates_scope_constraint_to_accept_pharmacist(tmp_path):
+    database = tmp_path / "v7-pharmacist.sqlite3"
+    connection = sqlite3.connect(database)
+    connection.executescript(
+        """
+        CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+        INSERT INTO schema_version(version) VALUES (7);
+        CREATE TABLE documents (document_id INTEGER PRIMARY KEY, file_name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE document_versions (version_id TEXT PRIMARY KEY, document_id INTEGER NOT NULL REFERENCES documents(document_id), sha256 TEXT NOT NULL, status TEXT NOT NULL, failure_reason TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE document_business_metadata (
+            version_id TEXT PRIMARY KEY REFERENCES document_versions(version_id),
+            content_type TEXT NOT NULL,
+            applicable_scope TEXT NOT NULL CHECK (applicable_scope IN ('unspecified', 'all_staff', 'nurse', 'doctor', 'administrator')),
+            effective_from TEXT,
+            review_due_at TEXT,
+            business_status TEXT NOT NULL,
+            owner_role TEXT,
+            supersedes_version_id TEXT REFERENCES document_versions(version_id),
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO documents(document_id, file_name) VALUES (1, '药师制度.docx');
+        INSERT INTO document_versions(version_id, document_id, sha256, status) VALUES ('v1', 1, 'hash', 'active');
+        INSERT INTO document_business_metadata(version_id, content_type, applicable_scope, business_status) VALUES ('v1', 'training', 'all_staff', 'approved');
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    repository = SqliteDocumentRepository(database)
+    try:
+        assert repository.schema_version() == 8
+        metadata = repository.upsert_document_business_metadata(
+            1,
+            DocumentBusinessMetadataInput(
+                content_type="training",
+                applicable_scope="pharmacist",
+                effective_from=None,
+                review_due_at=None,
+                business_status="approved",
+                owner_role=None,
+                supersedes_version_id=None,
+            ),
+        )
+        assert metadata.applicable_scope == "pharmacist"
+    finally:
+        repository.close()
 
 
 def test_list_chat_sessions_orders_by_activity_and_limits(repository):
@@ -529,6 +670,159 @@ def test_document_summary_reports_display_version_updated_at(repository):
     summary = repository.list_documents()[0]
 
     assert summary.updated_at
+
+
+def test_business_metadata_is_version_scoped_and_reports_unknown_by_default(repository):
+    version = repository.begin_index("制度.docx", "hash")
+    repository.activate(version.version_id)
+
+    summary = repository.list_documents()[0]
+
+    assert summary.business_metadata is None
+    metadata = repository.upsert_document_business_metadata(
+        summary.document_id,
+        DocumentBusinessMetadataInput(
+            content_type="policy",
+            applicable_scope="all_staff",
+            effective_from="2026-08-01",
+            review_due_at="2027-08-01",
+            business_status="unknown",
+            owner_role="护理部资料管理员",
+            supersedes_version_id=None,
+        ),
+    )
+
+    assert metadata.version_id == version.version_id
+    assert metadata.business_status == "unknown"
+    assert repository.list_documents()[0].business_metadata == metadata
+
+
+@pytest.mark.parametrize("field,value", [("effective_from", "2026/08/01"), ("review_due_at", "tomorrow")])
+def test_business_metadata_rejects_non_iso_dates(repository, field, value):
+    version = repository.begin_index("制度.docx", "hash")
+    repository.activate(version.version_id)
+    values = {
+        "content_type": "policy",
+        "applicable_scope": "all_staff",
+        "effective_from": "2026-08-01",
+        "review_due_at": "2027-08-01",
+        "business_status": "approved",
+        "owner_role": None,
+        "supersedes_version_id": None,
+    }
+    values[field] = value
+
+    with pytest.raises(ValueError, match="date"):
+        repository.upsert_document_business_metadata(
+            repository.list_documents()[0].document_id,
+            DocumentBusinessMetadataInput(**values),
+        )
+
+
+def test_business_metadata_rejects_cross_document_supersedes(repository):
+    old = repository.begin_index("旧制度.docx", "old")
+    repository.activate(old.version_id)
+    current = repository.begin_index("新制度.docx", "new")
+    repository.activate(current.version_id)
+
+    with pytest.raises(ValueError, match="supersedes"):
+        repository.upsert_document_business_metadata(
+            repository.list_documents()[0].document_id,
+            DocumentBusinessMetadataInput(
+                content_type="policy",
+                applicable_scope="all_staff",
+                effective_from="2026-08-01",
+                review_due_at=None,
+                business_status="approved",
+                owner_role=None,
+                supersedes_version_id=current.version_id,
+            ),
+        )
+
+
+def test_schema_v4_migration_preserves_existing_chat_rows(tmp_path):
+    database = tmp_path / "v3-chat.sqlite3"
+    connection = sqlite3.connect(database)
+    connection.executescript(
+        """
+        CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+        INSERT INTO schema_version(version) VALUES (3);
+        CREATE TABLE documents (document_id INTEGER PRIMARY KEY, file_name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE document_versions (version_id TEXT PRIMARY KEY, document_id INTEGER NOT NULL, sha256 TEXT NOT NULL, status TEXT NOT NULL, failure_reason TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE index_jobs (job_id TEXT PRIMARY KEY, version_id TEXT NOT NULL, status TEXT NOT NULL, error_message TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE chat_sessions (session_id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '新会话', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE messages (message_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'submitted', reply_to_message_id TEXT, rewritten_question TEXT, citations_json TEXT NOT NULL DEFAULT '[]', reason_code TEXT, reference_answer TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE feedback (feedback_id TEXT PRIMARY KEY, session_id TEXT, message_id TEXT, helpful INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+        INSERT INTO chat_sessions(session_id, title) VALUES ('session-1', '虚构会话');
+        INSERT INTO messages(message_id, session_id, role, content) VALUES ('message-1', 'session-1', 'user', '虚构问题');
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    repository = SqliteDocumentRepository(database)
+    try:
+        assert repository.schema_version() == 8
+        assert repository.list_chat_messages("session-1")[0].content == "虚构问题"
+    finally:
+        repository.close()
+
+
+def test_eligible_versions_require_approved_status_scope_and_effective_dates(repository):
+    all_staff = repository.begin_index("全员制度.docx", "all")
+    repository.activate(all_staff.version_id)
+    nurse = repository.begin_index("护士制度.docx", "nurse")
+    repository.activate(nurse.version_id)
+    unknown = repository.begin_index("待确认制度.docx", "unknown")
+    repository.activate(unknown.version_id)
+
+    for document in repository.list_documents():
+        scope = "all_staff" if document.file_name == "全员制度.docx" else (
+            "nurse" if document.file_name == "护士制度.docx" else "all_staff"
+        )
+        status = "approved" if document.file_name != "待确认制度.docx" else "unknown"
+        repository.upsert_document_business_metadata(
+            document.document_id,
+            DocumentBusinessMetadataInput(
+                content_type="policy",
+                applicable_scope=scope,
+                effective_from="2026-01-01",
+                review_due_at="2026-12-31",
+                business_status=status,
+                owner_role=None,
+                supersedes_version_id=None,
+            ),
+        )
+
+    unspecified = repository.eligible_version_ids("unspecified", date(2026, 8, 30))
+    nurse_scope = repository.eligible_version_ids("nurse", date(2026, 8, 30))
+
+    assert unspecified.version_ids == frozenset({all_staff.version_id})
+    assert nurse_scope.version_ids == frozenset({all_staff.version_id, nurse.version_id})
+    assert unknown.version_id not in nurse_scope.version_ids
+
+
+def test_eligible_versions_exclude_expired_approved_metadata(repository):
+    version = repository.begin_index("过期制度.docx", "expired")
+    repository.activate(version.version_id)
+    document = repository.list_documents()[0]
+    repository.upsert_document_business_metadata(
+        document.document_id,
+        DocumentBusinessMetadataInput(
+            content_type="policy",
+            applicable_scope="all_staff",
+            effective_from="2025-01-01",
+            review_due_at="2025-12-31",
+            business_status="approved",
+            owner_role=None,
+            supersedes_version_id=None,
+        ),
+    )
+
+    result = repository.eligible_version_ids("unspecified", date(2026, 8, 30))
+
+    assert result.version_ids == frozenset()
+    assert result.exclusion_reason == "EVIDENCE_SCOPE_UNCLEAR"
 
 
 def test_schema_v3_migration_keeps_newest_feedback_row_before_unique_index(tmp_path):
@@ -757,7 +1051,7 @@ def test_schema_migration_deduplicates_terminal_replies_before_unique_index(tmp_
     try:
         restored = repository.list_chat_messages("s1")
         assert [item.message_id for item in restored] == ["u1", "a-new"]
-        assert repository.schema_version() == 3
+        assert repository.schema_version() == 8
     finally:
         repository.close()
 

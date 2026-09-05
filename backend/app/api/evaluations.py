@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import math
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
@@ -119,11 +120,134 @@ def _safe_report(value: Any) -> dict[str, Any]:
         "created_at",
         "manual_review_required",
         "manual_review_minimum",
+        "industry_metrics",
     }
     result = {key: payload[key] for key in allowed if key in payload}
     result["results"] = [_safe_result(item) for item in payload.get("results", [])]
+    safe_metrics = _safe_industry_metrics(payload.get("industry_metrics"))
+    if safe_metrics is None:
+        result.pop("industry_metrics", None)
+    else:
+        result["industry_metrics"] = safe_metrics
     result["review_notice"] = "需人工抽查至少 10 条"
     return result
+
+
+_RATE_FIELDS = frozenset(
+    {"numerator", "denominator", "value", "ci95_low", "ci95_high"}
+)
+
+
+def _safe_industry_metrics(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    payload = _as_dict(value)
+    if set(payload) != {"protocol_version", "retrieval", "generation", "safety"}:
+        return None
+    version = payload.get("protocol_version")
+    if not isinstance(version, str) or version != "task12a-v1":
+        return None
+    retrieval = _safe_metric_group(
+        payload.get("retrieval"),
+        rate_fields=("recall_at_20", "recall_at_6", "precision_at_6", "negative_evidence_rate"),
+        scalar_fields=("mrr_at_20", "mrr_denominator", "ndcg_at_6", "ndcg_denominator"),
+    )
+    generation = _safe_metric_group(
+        payload.get("generation"),
+        rate_fields=(
+            "answer_availability",
+            "grounded_answer_success",
+            "answerable_over_refusal",
+            "citation_precision",
+            "citation_recall",
+        ),
+        scalar_fields=(),
+    )
+    safety = _safe_metric_group(
+        payload.get("safety"),
+        rate_fields=(
+            "unsafe_answer_rate",
+            "runtime_citation_visibility",
+            "no_answer_refusal",
+        ),
+        scalar_fields=(),
+    )
+    if retrieval is None or generation is None or safety is None:
+        return None
+    return {
+        "protocol_version": version,
+        "retrieval": retrieval,
+        "generation": generation,
+        "safety": safety,
+    }
+
+
+def _safe_metric_group(
+    value: Any,
+    *,
+    rate_fields: tuple[str, ...],
+    scalar_fields: tuple[str, ...],
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    payload = _as_dict(value)
+    if set(payload) != set(rate_fields) | set(scalar_fields):
+        return None
+    result: dict[str, Any] = {}
+    for field in rate_fields:
+        safe_rate = _safe_rate(payload.get(field))
+        if safe_rate is None:
+            return None
+        result[field] = safe_rate
+    for field in scalar_fields:
+        scalar = payload.get(field)
+        if field.endswith("_denominator"):
+            if isinstance(scalar, bool) or not isinstance(scalar, int) or scalar < 0:
+                return None
+            result[field] = scalar
+            continue
+        if scalar is not None:
+            if isinstance(scalar, bool) or not isinstance(scalar, (int, float)):
+                return None
+            scalar = float(scalar)
+            if not math.isfinite(scalar) or not 0.0 <= scalar <= 1.0:
+                return None
+        result[field] = scalar
+    return result
+
+
+def _safe_rate(value: Any) -> dict[str, Any] | None:
+    payload = _as_dict(value)
+    if set(payload) != _RATE_FIELDS:
+        return None
+    numerator = payload.get("numerator")
+    denominator = payload.get("denominator")
+    if (
+        isinstance(numerator, bool)
+        or not isinstance(numerator, int)
+        or isinstance(denominator, bool)
+        or not isinstance(denominator, int)
+        or numerator < 0
+        or denominator < 0
+        or numerator > denominator
+    ):
+        return None
+    values: dict[str, float] = {}
+    for field in ("value", "ci95_low", "ci95_high"):
+        raw = payload.get(field)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            return None
+        number = float(raw)
+        if not math.isfinite(number) or not 0.0 <= number <= 1.0:
+            return None
+        values[field] = number
+    if values["ci95_low"] > values["ci95_high"]:
+        return None
+    return {
+        "numerator": numerator,
+        "denominator": denominator,
+        **values,
+    }
 
 
 def _safe_result(value: Any) -> dict[str, Any]:

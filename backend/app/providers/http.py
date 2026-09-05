@@ -22,13 +22,21 @@ from app.errors import ProviderError
 logger = logging.getLogger(__name__)
 
 Sleep = Callable[[float], Awaitable[None] | None]
+UsageObserver = Callable[[Mapping[str, object]], Awaitable[None] | None]
 
 
 class _RequestFailure(Exception):
-    def __init__(self, status_code: int | None, retryable: bool, message: str) -> None:
+    def __init__(
+        self,
+        status_code: int | None,
+        retryable: bool,
+        message: str,
+        failure_kind: str = "unknown",
+    ) -> None:
         self.status_code = status_code
         self.retryable = retryable
         self.message = message
+        self.failure_kind = failure_kind
         super().__init__(message)
 
 
@@ -122,6 +130,8 @@ class ProviderHttpClient:
         timeout: float = 30.0,
         max_retries: int = 3,
         max_response_bytes: int = 4 * 1024 * 1024,
+        model: str | None = None,
+        usage_observer: UsageObserver | None = None,
     ) -> None:
         if (
             isinstance(timeout, bool)
@@ -144,6 +154,11 @@ class ProviderHttpClient:
         self.timeout = timeout
         self.max_retries = max(0, max_retries)
         self.max_response_bytes = max_response_bytes
+        self.model = model
+        self.usage_observer = usage_observer
+        self._transport_counts_budget = bool(
+            getattr(transport, "_counts_budget", False)
+        )
         self._sleep = sleep or asyncio.sleep
         self._owns_transport = transport is None
         if transport is None:
@@ -211,6 +226,8 @@ class ProviderHttpClient:
             await result
 
     async def _call_request(self, method: str, url: str, payload: Mapping[str, Any]) -> Any:
+        if not self._transport_counts_budget:
+            _consume_current_request()
         request = getattr(self._transport, "request", None)
         if request is None:
             request = getattr(self._transport, method.lower(), None)
@@ -233,20 +250,30 @@ class ProviderHttpClient:
             return await _maybe_await(result)
         except _RequestFailure:
             raise
-        except (httpx.TimeoutException, TimeoutError, ConnectionError, OSError) as error:
+        except (httpx.TimeoutException, TimeoutError) as error:
             raise _RequestFailure(
-                None, True, "provider request timed out or was unavailable"
+                None, True, "provider request timed out or was unavailable", "timeout"
+            ) from error
+        except (ConnectionError, OSError) as error:
+            raise _RequestFailure(
+                None, True, "provider transport was unavailable", "transport"
             ) from error
         except Exception as error:
-            raise _RequestFailure(None, False, "provider transport failed") from error
+            raise _RequestFailure(None, False, "provider transport failed", "transport") from error
 
     async def _request_once(self, operation: str, path: str, payload: Mapping[str, Any]) -> Any:
         try:
             response = await self._call_request("POST", self._url(path), payload)
         except _RequestFailure:
             raise
-        except (httpx.TimeoutException, TimeoutError, ConnectionError, OSError) as error:
-            raise _RequestFailure(None, True, "provider request timed out or was unavailable") from error
+        except (httpx.TimeoutException, TimeoutError) as error:
+            raise _RequestFailure(
+                None, True, "provider request timed out or was unavailable", "timeout"
+            ) from error
+        except (ConnectionError, OSError) as error:
+            raise _RequestFailure(
+                None, True, "provider transport was unavailable", "transport"
+            ) from error
 
         status_code = int(getattr(response, "status_code", 200))
         if status_code >= 400:
@@ -255,26 +282,73 @@ class ProviderHttpClient:
                 status_code,
                 status_code == 429 or status_code >= 500,
                 "provider returned an HTTP error",
+                "transport",
             )
         try:
             data = await self._response_json(response)
         finally:
             await _close_response(response)
+        await self._notify_usage(data, operation, payload)
         return data
+
+    async def _notify_usage(
+        self,
+        response: Any,
+        operation: str,
+        payload: Mapping[str, Any] | None = None,
+    ) -> None:
+        observer = self.usage_observer
+        if observer is None:
+            return
+        usage = response.get("usage") if isinstance(response, Mapping) else None
+        record: dict[str, object] = {
+            "provider": self.provider,
+            "model": (
+                payload.get("model")
+                if isinstance(payload, Mapping)
+                and isinstance(payload.get("model"), str)
+                else self.model or "unknown"
+            ),
+            "operation": operation,
+            "input_tokens": _non_negative_int(usage, "input_tokens", "prompt_tokens"),
+            "output_tokens": _non_negative_int(usage, "output_tokens", "completion_tokens"),
+            "total_tokens": _non_negative_int(usage, "total_tokens"),
+        }
+        record["usage_complete"] = (
+            record["input_tokens"] is not None
+            and record["output_tokens"] is not None
+            and record["total_tokens"] is not None
+        )
+        try:
+            from app.agents.budget import current_budget
+
+            budget = current_budget()
+            if budget is not None:
+                budget.record_usage(record)
+        except ImportError:
+            pass
+        try:
+            await _maybe_await(observer(record))
+        except Exception:  # noqa: BLE001 - usage telemetry must not change result
+            logger.warning("provider usage observer failed")
 
     async def _response_json(self, response: Any) -> Any:
         if isinstance(response, Mapping):
             return response
         content = getattr(response, "content", None)
         if isinstance(content, (bytes, bytearray)) and len(content) > self.max_response_bytes:
-            raise _RequestFailure(200, False, "provider response exceeded the size limit")
+            raise _RequestFailure(
+                200, False, "provider response exceeded the size limit", "schema"
+            )
         parser = getattr(response, "json", None)
         if not callable(parser):
-            raise _RequestFailure(200, False, "provider response was not JSON")
+            raise _RequestFailure(200, False, "provider response was not JSON", "schema")
         try:
             value = await _maybe_await(parser())
         except Exception as error:
-            raise _RequestFailure(200, False, "provider response was not valid JSON") from error
+            raise _RequestFailure(
+                200, False, "provider response was not valid JSON", "schema"
+            ) from error
         return value
 
     async def request_json(
@@ -308,10 +382,13 @@ class ProviderHttpClient:
                     failure.status_code,
                     failure.retryable,
                     failure.message,
+                    failure.failure_kind,  # type: ignore[arg-type]
                 ) from None
             except ProviderError:
                 raise
-            except Exception:  # noqa: BLE001 - provider boundary must fail closed
+            except Exception as error:
+                if _is_budget_control_error(error):
+                    raise
                 raise ProviderError(
                     self.provider,
                     operation,
@@ -328,6 +405,8 @@ class ProviderHttpClient:
     ) -> StreamHandle:
         stream = getattr(self._transport, "stream", None)
         if callable(stream):
+            if not self._transport_counts_budget:
+                _consume_current_request()
             try:
                 candidate = stream(
                     "POST",
@@ -353,8 +432,17 @@ class ProviderHttpClient:
                 else:
                     context = None
                     response = candidate
-            except (httpx.TimeoutException, TimeoutError, ConnectionError, OSError) as error:
-                raise _RequestFailure(None, True, "provider stream timed out or was unavailable") from error
+            except (httpx.TimeoutException, TimeoutError) as error:
+                raise _RequestFailure(
+                    None,
+                    True,
+                    "provider stream timed out or was unavailable",
+                    "timeout",
+                ) from error
+            except (ConnectionError, OSError) as error:
+                raise _RequestFailure(
+                    None, True, "provider stream was unavailable", "transport"
+                ) from error
         else:
             response = await self._call_request("POST", self._url(path), payload)
             context = None
@@ -368,6 +456,7 @@ class ProviderHttpClient:
                 status_code,
                 status_code == 429 or status_code >= 500,
                 "provider returned an HTTP error",
+                "transport",
             )
         return StreamHandle(response, context)
 
@@ -405,10 +494,13 @@ class ProviderHttpClient:
                     failure.status_code,
                     failure.retryable,
                     failure.message,
+                    failure.failure_kind,  # type: ignore[arg-type]
                 ) from None
             except ProviderError:
                 raise
-            except Exception:  # noqa: BLE001 - provider boundary must fail closed
+            except Exception as error:
+                if _is_budget_control_error(error):
+                    raise
                 raise ProviderError(
                     self.provider,
                     operation,
@@ -422,3 +514,31 @@ async def _close_response(response: Any) -> None:
     close = getattr(response, "aclose", None)
     if callable(close):
         await _maybe_await(close())
+
+
+def _non_negative_int(value: object, *keys: str) -> int | None:
+    if not isinstance(value, Mapping):
+        return None
+    for key in keys:
+        item = value.get(key)
+        if isinstance(item, int) and not isinstance(item, bool) and item >= 0:
+            return item
+    return None
+
+
+def _consume_current_request() -> None:
+    """Count an adapter-owned request using the current workflow stage."""
+
+    try:
+        from app.agents.budget import consume_current_request
+    except ImportError:
+        return
+    consume_current_request()
+
+
+def _is_budget_control_error(error: BaseException) -> bool:
+    try:
+        from app.agents.budget import BudgetConfigurationError, WorkflowBudgetExceeded
+    except ImportError:
+        return False
+    return isinstance(error, (BudgetConfigurationError, WorkflowBudgetExceeded))

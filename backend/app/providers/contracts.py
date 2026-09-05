@@ -33,6 +33,9 @@ class LanguageModelProvider(Protocol):
         messages: Sequence[Mapping[str, Any]],
         *,
         json_output: bool = False,
+        max_tokens: int | None = None,
+        thinking: Mapping[str, str] | None = None,
+        temperature: float | None = None,
     ) -> AsyncIterator[str]: ...
 
     async def complete_json(self, messages: Sequence[Mapping[str, Any]]) -> Any: ...

@@ -1,12 +1,16 @@
 import pytest
-from app.settings import Settings
 from pydantic import ValidationError
+
+from app.settings import Settings
 
 
 def test_siliconflow_free_only_defaults_to_approved_models() -> None:
     settings = Settings(_env_file=None)
     assert settings.siliconflow_free_only is True
     assert settings.stage_b_verification_enabled is False
+    assert settings.deepseek_answer_max_tokens == 32768
+    assert settings.deepseek_structured_max_tokens == 2048
+    assert settings.deepseek_answer_thinking_mode == "disabled"
     assert settings.embedding_model == "BAAI/bge-m3"
     assert settings.reranker_model == "BAAI/bge-reranker-v2-m3"
     assert settings.ocr_model == "PaddlePaddle/PaddleOCR-VL-1.5"
@@ -34,6 +38,21 @@ def test_large_local_corpus_can_use_bounded_pdf_and_timeout_limits() -> None:
 
     assert settings.ingestion_max_pdf_pages == 2_500
     assert settings.ingestion_file_timeout_seconds == 900
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("deepseek_answer_max_tokens", 32769),
+        ("deepseek_answer_max_tokens", 0),
+        ("deepseek_structured_max_tokens", 32769),
+        ("deepseek_structured_max_tokens", 0),
+        ("deepseek_answer_thinking_mode", "unknown"),
+    ],
+)
+def test_answer_generation_settings_have_bounded_values(field: str, value: object) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **{field: value})
 
 
 @pytest.mark.parametrize(

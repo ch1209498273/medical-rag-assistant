@@ -1,22 +1,41 @@
 import type {
   ChatEvent,
   Citation,
+  AudienceScope,
+  FeedbackCaseDetailResponse,
+  FeedbackCaseFilters,
+  FeedbackCaseSummary,
+  FeedbackEvidence,
+  FeedbackEvidenceReference,
+  FeedbackEventView,
+  FeedbackPromotion,
+  FeedbackReviewInput,
+  FeedbackReviewSummary,
+  FeedbackReviewView,
+  PromotionCheck,
   DocumentRow,
+  DocumentBusinessMetadata,
+  DocumentBusinessMetadataInput,
   Feedback,
+  FeedbackReason,
   HealthResponse,
   ScanResult,
   SessionSummary,
   SessionResponse,
+  WorkflowSummary,
 } from "./types";
 
 const API_PREFIX = "/api";
 const CHAT_STAGES = new Set([
   "accepted",
   "rewriting",
+  "preflight",
+  "routing",
   "retrieving",
   "reranking",
   "generating",
   "validating",
+  "verifying",
 ]);
 const EVENT_TYPES = new Set(["status", "answer_delta", "final", "error"]);
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
@@ -34,6 +53,33 @@ const SAFE_REASONS = new Set([
   "CHAT_UNAVAILABLE",
   "INVALID_EVENT",
   "PROVIDER_UNAVAILABLE",
+  "EVIDENCE_SCOPE_UNCLEAR",
+  "DOCUMENT_BUSINESS_STATUS_UNKNOWN",
+  "PROVIDER_TIMEOUT",
+  "PROVIDER_TRANSPORT_ERROR",
+  "PROVIDER_SCHEMA_INVALID",
+  "OUTPUT_TRUNCATED",
+  "ROUTER_UNAVAILABLE",
+  "WORKFLOW_BUDGET_EXCEEDED",
+  "WORKFLOW_UNAVAILABLE",
+  "WORKFLOW_TIMEOUT",
+  "QUESTION_NEEDS_CLARIFICATION",
+  "OUT_OF_SCOPE",
+]);
+const SAFE_FEEDBACK_REASONS = new Set<FeedbackReason>([
+  "not_answered",
+  "missing_step",
+  "version_mismatch",
+  "citation_mismatch",
+  "too_slow",
+]);
+const SAFE_AUDIENCE_SCOPES = new Set([
+  "unspecified",
+  "all_staff",
+  "nurse",
+  "doctor",
+  "pharmacist",
+  "administrator",
 ]);
 const SAFE_MESSAGE_STATUSES = new Set(["submitted", "answered", "refused", "error"]);
 const REFERENCE_REASONS = new Set([
@@ -100,9 +146,11 @@ export async function streamChat(
   question: string,
   sessionId: string | null,
   onEvent: (event: ChatEvent) => void,
+  audienceScope: AudienceScope = "unspecified",
 ): Promise<void> {
-  const body: { question: string; session_id?: string } = { question };
+  const body: { question: string; session_id?: string; audience_scope?: AudienceScope } = { question };
   if (sessionId) body.session_id = sessionId;
+  if (audienceScope !== "unspecified") body.audience_scope = audienceScope;
 
   let response: Response;
   try {
@@ -175,13 +223,23 @@ export async function listSessions(limit = 20): Promise<SessionSummary[]> {
   }
 }
 
-export async function saveFeedback(messageId: string, helpful: boolean): Promise<Feedback> {
+export async function saveFeedback(
+  messageId: string,
+  helpful: boolean,
+  reason?: FeedbackReason | null,
+): Promise<Feedback> {
+  if (helpful && reason != null) throw new ApiError(400, "FEEDBACK_REASON_INVALID");
+  if (reason != null && !SAFE_FEEDBACK_REASONS.has(reason)) {
+    throw new ApiError(400, "FEEDBACK_REASON_INVALID");
+  }
+  const body: { helpful: boolean; reason?: FeedbackReason } = { helpful };
+  if (reason != null) body.reason = reason;
   const payload = await requestJson(
     `${API_PREFIX}/chat/messages/${encodeURIComponent(messageId)}/feedback`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ helpful }),
+      body: JSON.stringify(body),
     },
     "FEEDBACK_UNAVAILABLE",
   );
@@ -230,8 +288,277 @@ export async function reindexDocument(documentId: number): Promise<DocumentRow> 
   return row;
 }
 
+export async function saveDocumentBusinessMetadata(
+  documentId: number,
+  metadata: DocumentBusinessMetadataInput,
+): Promise<DocumentBusinessMetadata> {
+  const payload = await requestJson(
+    documentsPath(String(documentId), "business-metadata"),
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(metadata),
+    },
+    "DOCUMENT_METADATA_SAVE_FAILED",
+  );
+  const result = normalizeDocumentBusinessMetadata(payload);
+  if (!result) throw new ApiError(200, "DOCUMENT_METADATA_SAVE_FAILED");
+  return result;
+}
+
+export async function getFeedbackReviewSummary(): Promise<FeedbackReviewSummary> {
+  const payload = await requestJson(
+    "/api/admin/feedback/summary",
+    { method: "GET" },
+    "FEEDBACK_REVIEW_UNAVAILABLE",
+  );
+  if (!isRecord(payload) || !isRecord(payload.summary)) {
+    throw new ApiError(200, "FEEDBACK_REVIEW_UNAVAILABLE");
+  }
+  const summary: FeedbackReviewSummary = {};
+  for (const [key, value] of Object.entries(payload.summary)) {
+    if (!/^[A-Za-z0-9_]+$/.test(key) || typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+      throw new ApiError(200, "FEEDBACK_REVIEW_UNAVAILABLE");
+    }
+    summary[key] = value;
+  }
+  return summary;
+}
+
+export async function listFeedbackCases(filters: FeedbackCaseFilters = {}): Promise<FeedbackCaseSummary[]> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined) params.set(key, String(value));
+  }
+  const query = params.toString();
+  const payload = await requestJson(
+    `/api/admin/feedback/cases${query ? `?${query}` : ""}`,
+    { method: "GET" },
+    "FEEDBACK_REVIEW_UNAVAILABLE",
+  );
+  if (!isRecord(payload) || !Array.isArray(payload.cases)) {
+    throw new ApiError(200, "FEEDBACK_REVIEW_UNAVAILABLE");
+  }
+  try {
+    return payload.cases.map(normalizeFeedbackCaseSummary);
+  } catch {
+    throw new ApiError(200, "FEEDBACK_REVIEW_UNAVAILABLE");
+  }
+}
+
+export async function getFeedbackCase(caseId: string): Promise<FeedbackCaseDetailResponse> {
+  if (!isSafeId(caseId)) throw new ApiError(400, "FEEDBACK_REVIEW_UNAVAILABLE");
+  const payload = await requestJson(
+    `/api/admin/feedback/cases/${encodeURIComponent(caseId)}`,
+    { method: "GET" },
+    "FEEDBACK_REVIEW_UNAVAILABLE",
+  );
+  try {
+    return normalizeFeedbackCaseDetailResponse(payload);
+  } catch {
+    throw new ApiError(200, "FEEDBACK_REVIEW_UNAVAILABLE");
+  }
+}
+
+export async function saveFeedbackReview(
+  caseId: string,
+  input: FeedbackReviewInput,
+): Promise<{ review: FeedbackReviewView; promotion: PromotionCheck }> {
+  if (!isSafeId(caseId) || !isFeedbackReviewInput(input)) {
+    throw new ApiError(400, "FEEDBACK_REVIEW_SAVE_FAILED");
+  }
+  const payload = await requestJson(
+    `/api/admin/feedback/cases/${encodeURIComponent(caseId)}/reviews`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
+    "FEEDBACK_REVIEW_SAVE_FAILED",
+  );
+  try {
+    if (!isRecord(payload)) throw new Error("invalid review payload");
+    return {
+      review: normalizeFeedbackReview(payload.review),
+      promotion: normalizePromotionCheck(payload.promotion),
+    };
+  } catch {
+    throw new ApiError(200, "FEEDBACK_REVIEW_SAVE_FAILED");
+  }
+}
+
+export async function getFeedbackPromotionCheck(caseId: string): Promise<PromotionCheck> {
+  if (!isSafeId(caseId)) throw new ApiError(400, "FEEDBACK_REVIEW_UNAVAILABLE");
+  const payload = await requestJson(
+    `/api/admin/feedback/cases/${encodeURIComponent(caseId)}/promotion-check`,
+    { method: "GET" },
+    "FEEDBACK_REVIEW_UNAVAILABLE",
+  );
+  try {
+    return normalizePromotionCheck(payload);
+  } catch {
+    throw new ApiError(200, "FEEDBACK_REVIEW_UNAVAILABLE");
+  }
+}
+
 function documentsPath(...segments: string[]): string {
   return [API_PREFIX, "documents", ...segments].join("/");
+}
+
+function normalizeFeedbackCaseSummary(value: unknown): FeedbackCaseSummary {
+  if (!isRecord(value)) throw new Error("case summary is invalid");
+  const priority = value.triage_priority;
+  const reviewStatus = value.review_status;
+  const promotionStatus = value.promotion_status;
+  if (
+    !isSafeId(value.case_id) ||
+    !isOneOf(priority, ["P0", "P1", "P2", "P3"]) ||
+    !isOneOf(reviewStatus, ["unreviewed", "in_review", "approved", "rejected", "adjudication_required"]) ||
+    !isOneOf(promotionStatus, ["not_promoted", "silver", "golden_v2_candidate", "golden_v2"]) ||
+    typeof value.question_preview !== "string" ||
+    value.question_preview.length > 120 ||
+    !isSafeText(value.question_preview) ||
+    !isSafeTimestamp(value.collected_at)
+  ) throw new Error("case summary is invalid");
+  return {
+    case_id: value.case_id,
+    triage_priority: priority,
+    reason_code: optionalSafeCode(value.reason_code),
+    question_preview: value.question_preview,
+    source_version: optionalSafeCode(value.source_version),
+    review_status: reviewStatus,
+    promotion_status: promotionStatus,
+    collected_at: value.collected_at,
+  };
+}
+
+function normalizeFeedbackCaseDetailResponse(value: unknown): FeedbackCaseDetailResponse {
+  if (!isRecord(value)) throw new Error("case detail is invalid");
+  if (!isRecord(value.case) || !Array.isArray(value.events) || !Array.isArray(value.reviews) || !isRecord(value.evidence) || !isRecord(value.promotion) || !Array.isArray(value.promotions)) {
+    throw new Error("case detail is invalid");
+  }
+  const detail = value.case;
+  if (
+    !isSafeId(detail.case_id) ||
+    !isOneOf(detail.redaction_status, ["passed", "review_required", "blocked"]) ||
+    !isOneOf(detail.answer_status, ["answered", "refused", "error"]) ||
+    (detail.question !== null && (typeof detail.question !== "string" || !isSafeText(detail.question))) ||
+    (detail.answer !== null && (typeof detail.answer !== "string" || !isSafeText(detail.answer))) ||
+    !isSafeTimestamp(detail.collected_at) ||
+    !isOneOf(detail.triage_priority, ["P0", "P1", "P2", "P3"]) ||
+    typeof detail.triage_score !== "number" || !Number.isInteger(detail.triage_score) || detail.triage_score < 0 ||
+    !isOneOf(detail.review_status, ["unreviewed", "in_review", "approved", "rejected", "adjudication_required"]) ||
+    !isOneOf(detail.promotion_status, ["not_promoted", "silver", "golden_v2_candidate", "golden_v2"]) ||
+    !isOneOf(detail.audience_scope, ["unspecified", "all_staff", "nurse", "doctor", "pharmacist", "administrator"])
+  ) throw new Error("case detail is invalid");
+  const detailResult = {
+    case_id: detail.case_id,
+    question: detail.question,
+    answer: detail.answer,
+    redaction_status: detail.redaction_status,
+    answer_status: detail.answer_status,
+    reason_code: optionalSafeCode(detail.reason_code),
+    source_version: optionalSafeCode(detail.source_version),
+    retrieval_profile: optionalSafeCode(detail.retrieval_profile),
+    citation_chunk_ids: safeIdArray(detail.citation_chunk_ids),
+    citation_count: safeNonNegativeInteger(detail.citation_count),
+    model_id: optionalSafeCode(detail.model_id),
+    prompt_version: optionalSafeCode(detail.prompt_version),
+    latency_bucket: optionalSafeCode(detail.latency_bucket),
+    audience_scope: detail.audience_scope,
+    collected_at: detail.collected_at,
+    triage_priority: detail.triage_priority,
+    triage_score: detail.triage_score,
+    triage_reasons: safeCodeArray(detail.triage_reasons),
+    review_status: detail.review_status,
+    promotion_status: detail.promotion_status,
+    event_count: safeNonNegativeInteger(detail.event_count),
+  } satisfies FeedbackCaseDetailResponse["case"];
+  return {
+    case: detailResult,
+    events: value.events.map(normalizeFeedbackEvent),
+    reviews: value.reviews.map(normalizeFeedbackReview),
+    evidence: normalizeFeedbackEvidence(value.evidence),
+    promotion: normalizePromotionCheck(value.promotion),
+    promotions: value.promotions.map(normalizeFeedbackPromotion),
+  };
+}
+
+function normalizeFeedbackEvidence(value: unknown): FeedbackEvidence {
+  if (!isRecord(value) || !isOneOf(value.status, ["available", "unavailable", "version_mismatch", "unsafe"]) || !Array.isArray(value.references)) throw new Error("evidence is invalid");
+  return {
+    status: value.status,
+    reason_code: optionalSafeCode(value.reason_code),
+    references: value.references.map(normalizeFeedbackEvidenceReference),
+  };
+}
+
+function normalizeFeedbackEvidenceReference(value: unknown): FeedbackEvidenceReference {
+  if (!isRecord(value) || !isSafeId(value.chunk_id) || !isSafeId(value.source_version) || !isSafeFileName(value.file_name) || !Array.isArray(value.heading_path) || !value.heading_path.every((item) => typeof item === "string" && isSafeHeading(item)) || typeof value.excerpt !== "string" || !isSafeText(value.excerpt) || value.excerpt.length > 300) throw new Error("evidence reference is invalid");
+  return {
+    chunk_id: value.chunk_id,
+    source_version: value.source_version,
+    file_name: value.file_name,
+    heading_path: value.heading_path,
+    page: nullableNumber(value.page) ?? null,
+    page_end: nullableNumber(value.page_end) ?? null,
+    paragraph_start: nullableNumber(value.paragraph_start) ?? null,
+    paragraph_end: nullableNumber(value.paragraph_end) ?? null,
+    table_id: typeof value.table_id === "string" ? value.table_id : null,
+    excerpt: value.excerpt,
+  };
+}
+
+function normalizeFeedbackEvent(value: unknown): FeedbackEventView {
+  if (!isRecord(value) || !isSafeId(value.event_id) || typeof value.helpful !== "boolean" || !isSafeTimestamp(value.event_at) || !isOneOf(value.source, ["user_click", "admin_correction", "import"]) || typeof value.event_schema_version !== "number" || !Number.isInteger(value.event_schema_version) || value.event_schema_version < 1) throw new Error("event is invalid");
+  return { event_id: value.event_id, helpful: value.helpful, feedback_reason: optionalSafeCode(value.feedback_reason), event_at: value.event_at, source: value.source, event_schema_version: value.event_schema_version };
+}
+
+function normalizeFeedbackReview(value: unknown): FeedbackReviewView {
+  if (!isRecord(value) || !isSafeId(value.review_id) || !isOneOf(value.reviewer_role, ["product", "engineering", "clinical_reviewer"]) || !isOneOf(value.decision, ["approve", "reject", "needs_adjudication"]) || !nullableBoolean(value.evidence_ok) || !nullableBoolean(value.points_ok) || !nullableBoolean(value.safety_ok) || !isSafeTimestamp(value.reviewed_at) || !isSafeId(value.review_version)) throw new Error("review is invalid");
+  return { review_id: value.review_id, reviewer_role: value.reviewer_role, decision: value.decision, evidence_ok: value.evidence_ok, points_ok: value.points_ok, safety_ok: value.safety_ok, note_code: optionalSafeCode(value.note_code), review_version: value.review_version, reviewed_at: value.reviewed_at };
+}
+
+function normalizeFeedbackPromotion(value: unknown): FeedbackPromotion {
+  if (!isRecord(value) || !isSafeId(value.promotion_id) || !isOneOf(value.target_split, ["dev", "holdout"]) || !isSafeTimestamp(value.promoted_at)) throw new Error("promotion is invalid");
+  return { promotion_id: value.promotion_id, target_set_id: optionalSafeCode(value.target_set_id), target_version: optionalSafeCode(value.target_version), target_split: value.target_split, promotion_reason: optionalSafeCode(value.promotion_reason), manifest_id: optionalSafeCode(value.manifest_id), promoted_at: value.promoted_at };
+}
+
+function normalizePromotionCheck(value: unknown): PromotionCheck {
+  if (!isRecord(value) || !isOneOf(value.status, ["not_promoted", "golden_v2_candidate"]) || !Array.isArray(value.reasons) || !value.reasons.every((item) => typeof item === "string" && _safeCode(item))) throw new Error("promotion check is invalid");
+  return { status: value.status, reasons: value.reasons };
+}
+
+function isFeedbackReviewInput(value: FeedbackReviewInput): boolean {
+  return isOneOf(value.reviewer_role, ["product", "engineering", "clinical_reviewer"]) && isOneOf(value.decision, ["approve", "reject", "needs_adjudication"]) && nullableBoolean(value.evidence_ok) && nullableBoolean(value.points_ok) && nullableBoolean(value.safety_ok) && (value.note_code === null || _safeCode(value.note_code)) && isSafeId(value.review_version);
+}
+
+function nullableBoolean(value: unknown): value is boolean | null {
+  return value === null || typeof value === "boolean";
+}
+
+function optionalSafeCode(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  return typeof value === "string" && _safeCode(value) ? value : null;
+}
+
+function _safeCode(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/.test(value);
+}
+
+function safeIdArray(value: unknown): string[] {
+  if (!Array.isArray(value) || !value.every(isSafeId)) throw new Error("ids are invalid");
+  return value;
+}
+
+function safeCodeArray(value: unknown): string[] {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string" && _safeCode(item))) throw new Error("codes are invalid");
+  return value;
+}
+
+function safeNonNegativeInteger(value: unknown): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) throw new Error("count is invalid");
+  return value;
 }
 
 async function requestJson(url: string, init: RequestInit, code: string): Promise<unknown> {
@@ -290,6 +617,78 @@ function isRuntimeMode(value: unknown): value is HealthResponse["runtime_mode"] 
 
 function isProviderState(value: unknown): value is HealthResponse["providers"][keyof HealthResponse["providers"]] {
   return typeof value === "string" && SAFE_PROVIDER_STATES.has(value);
+}
+
+const WORKFLOW_FIELDS = new Set([
+  "workflow_version",
+  "run_id",
+  "route",
+  "outcome",
+  "verifier_status",
+  "http_calls",
+  "elapsed_ms",
+  "reason_code",
+]);
+const WORKFLOW_ROUTES = new Set(["direct", "verify", "clarify", "out_of_scope"]);
+const WORKFLOW_OUTCOMES = new Set(["answered", "refused", "error", "cancelled"]);
+const WORKFLOW_VERIFIERS = new Set(["not_run", "passed", "failed", "unavailable"]);
+
+export function normalizeWorkflowSummary(value: unknown): WorkflowSummary | null {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value) || Object.keys(value).some((key) => !WORKFLOW_FIELDS.has(key))) {
+    throw new ClientStreamError();
+  }
+  if (
+    value.workflow_version !== "baseline_v1" &&
+    value.workflow_version !== "agent_workflow_v2a"
+  ) {
+    throw new ClientStreamError();
+  }
+  const runId = value.run_id;
+  if (!isSafeId(runId)) throw new ClientStreamError();
+  const route = value.route;
+  if (route !== null && (typeof route !== "string" || !WORKFLOW_ROUTES.has(route))) {
+    throw new ClientStreamError();
+  }
+  const outcome = value.outcome;
+  if (typeof outcome !== "string" || !WORKFLOW_OUTCOMES.has(outcome)) {
+    throw new ClientStreamError();
+  }
+  const verifierStatus = value.verifier_status;
+  if (typeof verifierStatus !== "string" || !WORKFLOW_VERIFIERS.has(verifierStatus)) {
+    throw new ClientStreamError();
+  }
+  if (
+    typeof value.http_calls !== "number" ||
+    !Number.isInteger(value.http_calls) ||
+    value.http_calls < 0 ||
+    value.http_calls > 7
+  ) {
+    throw new ClientStreamError();
+  }
+  if (
+    value.elapsed_ms !== null &&
+    (typeof value.elapsed_ms !== "number" ||
+      !Number.isInteger(value.elapsed_ms) ||
+      value.elapsed_ms < 0 ||
+      value.elapsed_ms > 86_400_000)
+  ) {
+    throw new ClientStreamError();
+  }
+  const reasonCode = value.reason_code;
+  if (reasonCode !== null && (typeof reasonCode !== "string" || !SAFE_REASONS.has(reasonCode))) {
+    throw new ClientStreamError();
+  }
+  return {
+    workflow_version: value.workflow_version,
+    run_id: runId,
+    route,
+    outcome: outcome as WorkflowSummary["outcome"],
+    verifier_status: verifierStatus as WorkflowSummary["verifier_status"],
+    http_calls: value.http_calls,
+    elapsed_ms: value.elapsed_ms,
+    reason_code: reasonCode,
+  } as WorkflowSummary;
 }
 
 function normalizeEvent(eventName: string, data: Record<string, unknown>): ChatEvent {
@@ -357,6 +756,9 @@ function normalizeEvent(eventName: string, data: Record<string, unknown>): ChatE
     };
     if (reasonCode !== undefined) result.reason_code = reasonCode;
     if (referenceAnswer !== undefined) result.reference_answer = referenceAnswer;
+    if (data.workflow_summary !== undefined) {
+      result.workflow_summary = normalizeWorkflowSummary(data.workflow_summary);
+    }
     return { type: "final", data: result };
   }
 
@@ -365,6 +767,9 @@ function normalizeEvent(eventName: string, data: Record<string, unknown>): ChatE
   };
   if (data.session_id !== undefined) result.session_id = requireId(data.session_id);
   if (data.message_id !== undefined) result.message_id = requireId(data.message_id);
+  if (data.workflow_summary !== undefined) {
+    result.workflow_summary = normalizeWorkflowSummary(data.workflow_summary);
+  }
   return { type: "error", data: result };
 }
 
@@ -392,12 +797,16 @@ export function normalizeCitation(value: unknown): Citation {
   const pageEnd = nullableNumber(value.page_end) ?? null;
   const paragraphStart = nullableNumber(value.paragraph_start) ?? null;
   const paragraphEnd = nullableNumber(value.paragraph_end) ?? null;
+  const tableId = value.table_id === undefined || value.table_id === null ? null : value.table_id;
+  if (tableId !== null && (typeof tableId !== "string" || !/^table-[1-9]\d*$/.test(tableId))) {
+    throw new ClientStreamError();
+  }
   if (value.file_name.toLowerCase().endsWith(".pdf")) {
     if (!validRange(page, pageEnd) || paragraphStart !== null || paragraphEnd !== null) {
       throw new ClientStreamError();
     }
   } else if (
-    !validRange(paragraphStart, paragraphEnd) ||
+    (!validRange(paragraphStart, paragraphEnd) && tableId === null) ||
     page !== null ||
     pageEnd !== null
   ) {
@@ -411,6 +820,7 @@ export function normalizeCitation(value: unknown): Citation {
     page_end: pageEnd,
     paragraph_start: paragraphStart,
     paragraph_end: paragraphEnd,
+    table_id: tableId,
     excerpt: value.excerpt,
   };
 }
@@ -525,6 +935,8 @@ function normalizeSessionMessage(
     if (!Array.isArray(value.citations)) throw new Error("citations are invalid");
     const citations = value.citations.map(normalizeCitation);
     const reasonCode = normalizeReason(value.reason_code);
+    const audienceScope = normalizeAudienceScope(value.audience_scope);
+    const workflowSummary = normalizeWorkflowSummary(value.workflow_summary);
     if (value.role === "user" && reasonCode !== null) throw new Error("user reason is invalid");
     if (value.role === "user" && citations.length > 0) throw new Error("user citations are invalid");
     if (value.role === "assistant" && ["refused", "error"].includes(value.status) && citations.length > 0) {
@@ -569,6 +981,8 @@ function normalizeSessionMessage(
       citations,
       reason_code: reasonCode,
       reference_answer: referenceAnswer,
+      audience_scope: audienceScope,
+      workflow_summary: workflowSummary,
       created_at: value.created_at,
       feedback: normalizeFeedback(value.feedback),
     };
@@ -586,6 +1000,8 @@ function safeErrorMessage(index: number): SessionResponse["messages"][number] {
     rewritten_question: null,
     citations: [],
     reason_code: "CHAT_UNAVAILABLE",
+    audience_scope: "unspecified",
+    workflow_summary: null,
     created_at: "1970-01-01 00:00:00",
     feedback: null,
   };
@@ -594,6 +1010,14 @@ function safeErrorMessage(index: number): SessionResponse["messages"][number] {
 function normalizeReason(value: unknown): string | null {
   if (value === undefined || value === null) return null;
   return typeof value === "string" && SAFE_REASONS.has(value) ? value : (() => { throw new Error("reason is invalid"); })();
+}
+
+function normalizeAudienceScope(value: unknown): AudienceScope {
+  const scope = value === undefined || value === null ? "unspecified" : value;
+  if (typeof scope !== "string" || !SAFE_AUDIENCE_SCOPES.has(scope)) {
+    throw new Error("audience scope is invalid");
+  }
+  return scope as AudienceScope;
 }
 
 function normalizeFeedback(value: unknown): Feedback | null {
@@ -606,10 +1030,18 @@ function normalizeFeedback(value: unknown): Feedback | null {
   ) {
     return null;
   }
+  const reason = value.reason === undefined || value.reason === null
+    ? null
+    : typeof value.reason === "string" && SAFE_FEEDBACK_REASONS.has(value.reason as FeedbackReason)
+      ? value.reason as FeedbackReason
+      : null;
+  if (value.reason !== undefined && value.reason !== null && reason === null) return null;
+  if (value.helpful && reason !== null) return null;
   return {
     message_id: value.message_id,
     helpful: value.helpful,
     created_at: value.created_at,
+    reason,
   };
 }
 
@@ -645,6 +1077,32 @@ export function normalizeDocumentRow(value: unknown): DocumentRow | null {
     status: value.status,
     updated_at: value.updated_at === undefined ? null : value.updated_at as string | null,
     failure_reason: failureReason,
+    business_metadata: value.business_metadata === undefined
+      ? null
+      : normalizeDocumentBusinessMetadata(value.business_metadata),
+  };
+}
+
+export function normalizeDocumentBusinessMetadata(value: unknown): DocumentBusinessMetadata | null {
+  if (!isRecord(value) || !isSafeId(value.version_id) || !isSafeTimestamp(value.updated_at)) return null;
+  if (
+    !isOneOf(value.content_type, ["policy", "training", "procedure", "other"]) ||
+    !isOneOf(value.applicable_scope, ["unspecified", "all_staff", "nurse", "doctor", "pharmacist", "administrator"]) ||
+    !isOneOf(value.business_status, ["draft", "approved", "superseded", "retired", "unknown"])
+  ) return null;
+  if (!isOptionalIsoDate(value.effective_from) || !isOptionalIsoDate(value.review_due_at)) return null;
+  if (value.owner_role !== null && value.owner_role !== undefined && (typeof value.owner_role !== "string" || !value.owner_role.trim() || value.owner_role.length > 80)) return null;
+  if (value.supersedes_version_id !== null && value.supersedes_version_id !== undefined && !isSafeId(value.supersedes_version_id)) return null;
+  return {
+    version_id: value.version_id,
+    content_type: value.content_type,
+    applicable_scope: value.applicable_scope,
+    effective_from: value.effective_from === undefined ? null : value.effective_from,
+    review_due_at: value.review_due_at === undefined ? null : value.review_due_at,
+    business_status: value.business_status,
+    owner_role: value.owner_role === undefined ? null : value.owner_role,
+    supersedes_version_id: value.supersedes_version_id === undefined ? null : value.supersedes_version_id,
+    updated_at: value.updated_at,
   };
 }
 
@@ -673,4 +1131,12 @@ function isSafeTimestamp(value: unknown): value is string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isOneOf<T extends string>(value: unknown, values: readonly T[]): value is T {
+  return typeof value === "string" && values.includes(value as T);
+}
+
+function isOptionalIsoDate(value: unknown): value is string | null | undefined {
+  return value === null || value === undefined || (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value));
 }

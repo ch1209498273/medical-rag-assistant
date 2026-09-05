@@ -48,8 +48,22 @@ DEFAULT_DEEPSEEK_STREAM_MAX_BYTES = 1 * 1024 * 1024
 DEFAULT_DEEPSEEK_STREAM_MAX_CHARS = 200_000
 DEFAULT_DEEPSEEK_STREAM_MAX_EVENTS = 2_048
 DEFAULT_DEEPSEEK_STREAM_TIMEOUT_SECONDS = 60.0
+DEFAULT_DEEPSEEK_ANSWER_MAX_TOKENS = 32_768
+DEFAULT_DEEPSEEK_STRUCTURED_MAX_TOKENS = 2_048
 
 RuntimeMode = Literal["demo", "cloud"]
+RetrievalStrategy = Literal["vector", "hybrid", "hybrid_normalized"]
+RetrievalFusionProfile = Literal["balanced", "vector_dominant"]
+AnswerPromptProfile = Literal["c1", "evidence_complete"]
+AnswerWorkflow = Literal["baseline_v1", "agent_workflow_v2a"]
+
+RRF_K = 60
+RRF_WEIGHTS_BY_PROFILE: Mapping[str, tuple[float, float]] = MappingProxyType(
+    {
+        "balanced": (1.0, 1.0),
+        "vector_dominant": (3.0, 1.0),
+    }
+)
 
 
 class Settings(BaseSettings):
@@ -79,6 +93,14 @@ class Settings(BaseSettings):
     embedding_model: str = "BAAI/bge-m3"
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     ocr_model: str = "PaddlePaddle/PaddleOCR-VL-1.5"
+    retrieval_strategy: RetrievalStrategy = "vector"
+    retrieval_fusion_profile: RetrievalFusionProfile = "balanced"
+    retrieval_diagnostic_trace: bool = False
+    answer_prompt_profile: AnswerPromptProfile = "c1"
+    # Keep the production path on the proven v1 orchestrator.  The candidate
+    # workflow is an explicit local experiment switch, independent of demo or
+    # cloud provider selection.
+    answer_workflow: AnswerWorkflow = "baseline_v1"
     retrieval_limit: int = Field(default=20, ge=1, le=20)
     rerank_limit: int = Field(default=6, ge=1, le=20)
     relevance_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
@@ -120,6 +142,16 @@ class Settings(BaseSettings):
     deepseek_stream_timeout_seconds: float = Field(
         default=DEFAULT_DEEPSEEK_STREAM_TIMEOUT_SECONDS, gt=0.0, le=300.0
     )
+    # Keep the shared client default small for routing/rewriting/reference and
+    # raise only the formal answer ceiling when AnswerService opts in.
+    deepseek_answer_max_tokens: int = Field(
+        default=DEFAULT_DEEPSEEK_ANSWER_MAX_TOKENS, ge=1, le=32_768
+    )
+    deepseek_structured_max_tokens: int = Field(
+        default=DEFAULT_DEEPSEEK_STRUCTURED_MAX_TOKENS, ge=1, le=32_768
+    )
+    deepseek_answer_thinking_mode: Literal["enabled", "disabled"] = "disabled"
+    feedback_review_ui_enabled: bool = False
     minimax_api_key: str = Field(default="", repr=False)
     minimax_base_url: str = "https://api.minimaxi.com/v1"
     minimax_model: str = "MiniMax-M2.7"
@@ -156,6 +188,50 @@ class Settings(BaseSettings):
             resolved = value.resolve() if value.is_absolute() else (backend_directory / value).resolve()
             setattr(self, field, resolved)
         return self
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_fusion_profile_aliases(cls, value: Any) -> Any:
+        """Accept the short profile name while storing one canonical field."""
+
+        if not isinstance(value, Mapping):
+            return value
+        values = dict(value)
+        aliases = [
+            values.pop(alias, None)
+            for alias in ("fusion_profile", "rrf_fusion_profile")
+            if alias in values
+        ]
+        aliases = [item for item in aliases if item is not None]
+        if aliases:
+            canonical = values.get("retrieval_fusion_profile")
+            if canonical is not None and any(item != canonical for item in aliases):
+                raise ValueError("fusion profile aliases must agree")
+            values["retrieval_fusion_profile"] = aliases[0]
+        profile = values.get("retrieval_fusion_profile")
+        if profile is not None and (
+            not isinstance(profile, str) or profile not in RRF_WEIGHTS_BY_PROFILE
+        ):
+            raise ValueError("fusion profile must be balanced or vector_dominant")
+        return values
+
+    @property
+    def fusion_profile(self) -> RetrievalFusionProfile:
+        """Compatibility alias for callers that use the shorter name."""
+
+        return self.retrieval_fusion_profile
+
+    @property
+    def vector_rrf_weight(self) -> float:
+        """Return the fixed vector weight selected by the fusion profile."""
+
+        return RRF_WEIGHTS_BY_PROFILE[self.retrieval_fusion_profile][0]
+
+    @property
+    def lexical_rrf_weight(self) -> float:
+        """Return the fixed lexical weight selected by the fusion profile."""
+
+        return RRF_WEIGHTS_BY_PROFILE[self.retrieval_fusion_profile][1]
 
     def model_dump(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         """Serialize without provider credentials, even when not requested."""

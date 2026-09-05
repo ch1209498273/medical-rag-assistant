@@ -71,6 +71,64 @@ describe("ChatPage", () => {
     expect(await screen.findByText("虚构公开样例")).toBeInTheDocument();
   });
 
+  it("sends the selected audience scope as a data hint", async () => {
+    const user = userEvent.setup();
+    render(<ChatPage />);
+
+    expect(screen.getByText("仅影响资料检索，不等于登录权限")).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("希望适用的人员范围"), "nurse");
+    await user.type(screen.getByRole("textbox", { name: "问题" }), "护士培训流程？");
+    await user.click(screen.getByRole("button", { name: "发送问题" }));
+
+    expect(mockedStreamChat).toHaveBeenCalledWith(
+      "护士培训流程？",
+      null,
+      expect.any(Function),
+      "nurse",
+    );
+  });
+
+  it("offers pharmacist as an audience scope", () => {
+    render(<ChatPage />);
+
+    expect(screen.getByRole("option", { name: "药师" })).toHaveValue("pharmacist");
+  });
+
+  it("shows persisted workflow facts after a streamed answer", async () => {
+    const user = userEvent.setup();
+    mockedStreamChat.mockImplementation(async (_question, _sessionId, onEvent) => {
+      onEvent({ type: "status", data: { stage: "accepted", session_id: "s1", message_id: "u1" } });
+      onEvent({ type: "answer_delta", data: { text: "依据资料回答。", source_ids: ["S1"] } });
+      onEvent({
+        type: "final",
+        data: {
+          session_id: "s1",
+          message_id: "a1",
+          refused: false,
+          citations: [citation],
+          workflow_summary: {
+            workflow_version: "agent_workflow_v2a",
+            run_id: "run-12345678",
+            route: "verify",
+            outcome: "answered",
+            verifier_status: "passed",
+            http_calls: 4,
+            elapsed_ms: 820,
+            reason_code: null,
+          },
+        },
+      });
+    });
+
+    render(<ChatPage />);
+    await user.type(screen.getByRole("textbox", { name: "问题" }), "问题");
+    await user.click(screen.getByRole("button", { name: "发送问题" }));
+
+    expect(await screen.findByText("需核验路径")).toBeInTheDocument();
+    expect(screen.getByText("核验通过")).toBeInTheDocument();
+    expect(screen.getByText("4 次")).toBeInTheDocument();
+  });
+
   it("restores the saved session without posting a new question and clears it when starting over", async () => {
     localStorage.setItem("hemodialysis.currentSessionId", "s1");
     mockedGetSession.mockResolvedValue({
@@ -179,6 +237,8 @@ describe("ChatPage", () => {
 
     mockedSaveFeedback.mockRejectedValueOnce(new Error("untrusted backend detail must stay hidden"));
     await user.click(screen.getByRole("button", { name: "无用" }));
+    await user.selectOptions(screen.getByLabelText("无用原因"), "missing_step");
+    await user.click(screen.getByRole("button", { name: "提交无用反馈" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("反馈未保存");
     expect(screen.getByRole("alert")).not.toHaveTextContent("untrusted backend detail");
   });

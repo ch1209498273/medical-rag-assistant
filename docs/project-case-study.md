@@ -25,13 +25,23 @@
 3. 用 `IngestionService` 解析 PDF/DOCX、保留 `SourceRef`、切 Chunk、写 SQLite 版本并把向量写入 Qdrant Local。
 4. 用 `RetrievalService` 固定最多 20 条召回、去重、最多 6 条重排和 `0.35` 相关性门；用 `AnswerService` 缓冲完整输出，验证双字段 JSON 与整组引用后才发 SSE。
 5. 用 `ChatOrchestrator` 负责会话、追问改写、历史恢复和终端持久化；API/UI 只接收白名单事件和固定 reason code。
-6. 为每个任务先写失败测试，再实现最小行为；复核后继续补齐 Provider 消息边界、runtime 资源关闭、Demo 资料来源边界和启动器 PID 归属。
+6. 在 v1.1 Task 2～3 增加资料业务元数据和 `audience_scope`：正式答案只从 `approved`、日期有效且范围匹配的版本召回；资格为空时不调用重排/生成并给出可解释拒答。
+7. 在 v1.1 Task 4 增加五类无用反馈原因和本地 Bad Case 状态机，让“用户觉得不好”可以进入修复与回归闭环；聚合导出不包含内容正文。
+8. 为每个任务先写失败测试，再实现最小行为；复核后继续补齐 Provider 消息边界、runtime 资源关闭、Demo 资料来源边界和启动器 PID 归属。
+9. 在 v1.1 Task 5 固定指标字典：每个比例同时写分子、分母、Wilson 95% 置信区间和限制；再用虚构资料的零网络 Demo 验收治理链路，避免把一次私有云端观测写成真实业务成效。
+10. 在 v2.0 2A 先建立 A/B/C 同协议对照合同、调用预算和零出网预检，再决定是否为候选工作流申请一次性云端评测授权；默认正式链路不变。
 
 ### Result — 当前可展示什么，不能展示什么
 
 Demo 的安全聚合输出为 `indexed_documents=8 answered_questions=2 refused_questions=1 network_calls=0`。它能展示四份虚构资料的索引、带引用的登记问题回答、上下文追问、资料外拒答、会话恢复和资料管理页。
 
 私有冻结评测的聚合结果也只用于工程判断：C1 基线正式回答 9/30，C2 实验 14/30，但无答案拒答从 100% 降到 60%，低于 90% 安全门，所以按项目负责人确认回滚到 C1。结果说明了为什么不能只追求回答数量，也不构成医学正确性或生产能力证明。
+
+后续 9F-B 在不同的私有协议下又观察到正式答案 20/30、无答案拒答 5/5；它补充了失败分类线索，但不能与 C1/C2 直接排名，更不能把 5/5 写成零风险。系统展示引用，只说明引用可定位；可见引用不等于答案正确。面试时我会明确说明：技术 `active` 代表索引可检索，尚不代表资料已经在业务上生效。
+
+Task 5 的本机验收输出为 `indexed_documents=8 answered_questions=2 refused_questions=1 network_calls=0`，后端 909 passed/10 skipped、前端 38 passed、生产构建通过。这个结果证明索引、业务资格、引用、拒答、追问、历史和通用参考分栏在虚构数据上连通；它不代表真实医护采纳、临床改善、ROI 或开放域模型能力。
+
+2A 的本地工程已经完成：协议校验、预算 transport、零出网预检、失败回退和公开候选导出均可复核；云端 A/C 对照尚未在本页写入成绩，避免把未授权的出站实验误写成产品效果。
 
 ## 关键数据旅程
 
@@ -40,10 +50,12 @@ Demo 的安全聚合输出为 `indexed_documents=8 answered_questions=2 refused_
   → 安全扫描与 SHA-256 版本
   → 解析/Chunk/SourceRef
   → Embedding → Qdrant Local
-  → SQLite 文档状态与会话
+  → SQLite 文档状态、业务元数据与会话
+  → audience_scope + approved/date allowlist
   → 问题清理 → recall 20 → 去重 → rerank 6 → 0.35 门
   → Demo 或 DeepSeek
   → JSON/引用核验 → SSE → 会话持久化
+  → 反馈原因 → Bad Case → 修复/回归
 ```
 
 如果证据为空、分数不足、Provider 失败、答案结构不合格或引用不可定位，系统返回固定拒答/错误状态，不把上游原文、提示词、Key 或路径带给浏览器。
@@ -53,6 +65,8 @@ Demo 的安全聚合输出为 `indexed_documents=8 answered_questions=2 refused_
 - SQLite + Qdrant Local 让本机复现成本低，但不提供共享部署、ACL 或高可用；MySQL/Qdrant Server 是 v2.0 候选。
 - Demo 与 Cloud 共用应用接口，保证演示能验证真实流程；Demo 的场景匹配是确定性测试替身，不是开放域智能。
 - 完整缓冲和整条引用拒答牺牲部分回答率，换取可解释失败；C2 的 14/30 与 60% 拒答边界退化证明了回滚价值。
+- 技术 `active` 与业务 `approved` 分离，避免把“已建索引”误当作“当前制度”；岗位范围只是资料适用性提示，不冒充登录 ACL。
+- 反馈不直接保存自由文本：固定原因和相邻状态机便于统计与回归，也避免把问答正文复制到质量表；这使得“质量闭环”可展示但不夸大为生产审计。
 - 开发多 Agent 帮助拆分实现、测试和安全复核，但产品请求仍是单一 RAG 编排，不借协作角色夸大运行时能力。
 
 ## 三分钟面试讲法

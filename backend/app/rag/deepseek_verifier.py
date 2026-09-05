@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from pathlib import PurePath
 from typing import Any
 
+from app.agents.budget import WorkflowBudgetExceeded, stage_scope
 from app.chat.safety import ABSOLUTE_PATH_RE
 from app.rag.models import Evidence
 from app.rag.verification import VerificationResult
@@ -57,7 +58,8 @@ class DeepSeekClaimVerifier:
                 raise ValueError("evidence is invalid")
 
             messages = self._messages(question, answer, evidence_items)
-            payload = await self.deepseek.complete_json(messages)
+            with stage_scope("verifying"):
+                payload = await self.deepseek.complete_json(messages)
             result = VerificationResult.model_validate(payload)
             if any(
                 source_id not in known_source_ids
@@ -66,6 +68,8 @@ class DeepSeekClaimVerifier:
             ):
                 raise ValueError("verification source is unknown")
             return result
+        except WorkflowBudgetExceeded:
+            raise
         except Exception:  # noqa: BLE001 - provider boundary must not leak details
             raise ValueError("verification unavailable") from None
 

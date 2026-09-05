@@ -3,17 +3,24 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import DocumentsPage from "./DocumentsPage";
-import { listDocuments, reindexDocument, scanDocuments } from "./api/client";
+import {
+  listDocuments,
+  reindexDocument,
+  saveDocumentBusinessMetadata,
+  scanDocuments,
+} from "./api/client";
 import type { DocumentRow } from "./api/types";
 
 vi.mock("./api/client", () => ({
   listDocuments: vi.fn(),
   reindexDocument: vi.fn(),
+  saveDocumentBusinessMetadata: vi.fn(),
   scanDocuments: vi.fn(),
 }));
 
 const mockedListDocuments = vi.mocked(listDocuments);
 const mockedReindexDocument = vi.mocked(reindexDocument);
+const mockedSaveDocumentBusinessMetadata = vi.mocked(saveDocumentBusinessMetadata);
 const mockedScanDocuments = vi.mocked(scanDocuments);
 
 describe("DocumentsPage", () => {
@@ -45,6 +52,17 @@ describe("DocumentsPage", () => {
       status: "active",
       updated_at: "2026-08-23T01:02:03Z",
       failure_reason: null,
+    });
+    mockedSaveDocumentBusinessMetadata.mockResolvedValue({
+      version_id: "v1",
+      content_type: "policy",
+      applicable_scope: "all_staff",
+      effective_from: "2026-08-01",
+      review_due_at: "2027-08-01",
+      business_status: "approved",
+      owner_role: "护理部资料管理员",
+      supersedes_version_id: null,
+      updated_at: "2026-08-30T12:00:00Z",
     });
   });
 
@@ -106,6 +124,40 @@ describe("DocumentsPage", () => {
 
     await user.click(screen.getByRole("button", { name: "扫描资料" }));
     expect(await screen.findByRole("status")).toHaveTextContent("扫描完成，资料列表已刷新");
+  });
+
+  it("saves controlled business metadata without rendering document content", async () => {
+    const user = userEvent.setup();
+    render(<DocumentsPage />);
+    await screen.findByText("护理制度.docx");
+
+    expect(screen.getByRole("button", { name: "保存资料属性" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "设置 护理制度.docx 的资料属性" }));
+    await user.selectOptions(screen.getByLabelText("业务状态"), "approved");
+    await user.selectOptions(screen.getByLabelText("适用范围"), "all_staff");
+    await user.type(screen.getByLabelText("生效日期"), "2026-08-01");
+    await user.type(screen.getByLabelText("复核日期"), "2027-08-01");
+    await user.click(screen.getByRole("button", { name: "保存资料属性" }));
+
+    expect(mockedSaveDocumentBusinessMetadata).toHaveBeenCalledWith(1, {
+      content_type: "policy",
+      applicable_scope: "all_staff",
+      effective_from: "2026-08-01",
+      review_due_at: "2027-08-01",
+      business_status: "approved",
+      owner_role: null,
+      supersedes_version_id: null,
+    });
+    expect(screen.queryByText("虚构资料正文")).not.toBeInTheDocument();
+  });
+
+  it("offers pharmacist when editing document applicability", async () => {
+    render(<DocumentsPage />);
+    await screen.findByText("护理制度.docx");
+
+    await userEvent.click(screen.getByRole("button", { name: "设置 护理制度.docx 的资料属性" }));
+
+    expect(screen.getByRole("option", { name: "药师" })).toHaveValue("pharmacist");
   });
 });
 

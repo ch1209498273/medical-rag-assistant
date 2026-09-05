@@ -7,9 +7,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
+
 from app.main import create_app
 from app.settings import Settings
-from fastapi.testclient import TestClient
 
 
 @dataclass
@@ -51,6 +52,21 @@ class FakeDocumentApiService:
             "status": "active",
             "version_id": "version-2",
             "failure_reason": None,
+        }
+
+    def update_document_business_metadata(self, document_id: int, metadata):
+        if document_id != 1:
+            raise KeyError(document_id)
+        return {
+            "version_id": "version-1",
+            "content_type": metadata.content_type,
+            "applicable_scope": metadata.applicable_scope,
+            "effective_from": metadata.effective_from,
+            "review_due_at": metadata.review_due_at,
+            "business_status": metadata.business_status,
+            "owner_role": metadata.owner_role,
+            "supersedes_version_id": metadata.supersedes_version_id,
+            "updated_at": "2026-08-30 12:00:00",
         }
 
 
@@ -125,6 +141,7 @@ def test_document_api_fails_closed_for_tampered_metadata_and_timestamps(tmp_path
             "updated_at": "Traceback from provider",
             "failure_reason": "C:" + chr(92) + "private" + chr(92) + "raw-error",
         }
+
     ]
 
     response = _client(tmp_path, service).get("/api/documents")
@@ -191,6 +208,66 @@ def test_reindex_path_traversal_is_not_a_valid_document_identifier(tmp_path):
 
     assert response.status_code in {404, 422}
     assert service.reindexed == []
+
+
+def test_business_metadata_endpoint_accepts_only_controlled_fields(tmp_path):
+    service = FakeDocumentApiService()
+    response = _client(tmp_path, service).put(
+        "/api/documents/1/business-metadata",
+        json={
+            "content_type": "policy",
+            "applicable_scope": "all_staff",
+            "effective_from": "2026-08-01",
+            "review_due_at": "2027-08-01",
+            "business_status": "approved",
+            "owner_role": "护理部资料管理员",
+            "supersedes_version_id": None,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["business_status"] == "approved"
+    assert "text" not in response.json()
+
+
+def test_business_metadata_endpoint_accepts_pharmacist_scope(tmp_path):
+    response = _client(tmp_path, FakeDocumentApiService()).put(
+        "/api/documents/1/business-metadata",
+        json={
+            "content_type": "training",
+            "applicable_scope": "pharmacist",
+            "business_status": "approved",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["applicable_scope"] == "pharmacist"
+
+
+@pytest.mark.parametrize("payload", [
+    {"content_type": "policy", "applicable_scope": "patient", "business_status": "approved"},
+    {"content_type": "policy", "applicable_scope": "all_staff", "business_status": "published"},
+])
+def test_business_metadata_endpoint_rejects_invalid_enums(tmp_path, payload):
+    response = _client(tmp_path, FakeDocumentApiService()).put(
+        "/api/documents/1/business-metadata", json=payload
+    )
+
+    assert response.status_code == 422
+
+
+def test_business_metadata_endpoint_reports_missing_document_without_details(tmp_path):
+    response = _client(tmp_path, FakeDocumentApiService()).put(
+        "/api/documents/404/business-metadata",
+        json={
+            "content_type": "policy",
+            "applicable_scope": "all_staff",
+            "business_status": "approved",
+        },
+    )
+
+    assert response.status_code == 404
+    assert "404" not in response.text
 
 
 def test_cloud_app_fails_closed_before_startup_without_exposing_key(tmp_path):
@@ -355,6 +432,54 @@ async def test_rag_runtime_feature_flag_controls_optional_claim_verifier(
         assert runtime.answerer.verifier.deepseek is deepseek
     else:
         assert runtime.answerer.verifier is None
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_rag_runtime_scopes_large_answer_budget_to_formal_answerer(
+    tmp_path, monkeypatch
+):
+    import app.main as main_module
+
+    deepseek_kwargs: dict[str, object] = {}
+    answerer_kwargs: list[dict[str, object]] = []
+
+    class DeepSeek:
+        async def aclose(self):
+            return None
+
+    def make_deepseek(*args, **kwargs):
+        deepseek_kwargs.update(kwargs)
+        return DeepSeek()
+
+    class Retrieval:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class Answerer:
+        def __init__(self, **kwargs):
+            answerer_kwargs.append(kwargs)
+            self.verifier = kwargs.get("verifier")
+
+    class DocumentRuntime:
+        repository = object()
+        vector_store = object()
+        provider = object()
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(main_module, "DeepSeekClient", make_deepseek)
+    monkeypatch.setattr(main_module, "RetrievalService", Retrieval)
+    monkeypatch.setattr(main_module, "AnswerService", Answerer)
+    settings = _cloud_settings(tmp_path)
+
+    runtime = await main_module.build_rag_runtime_async(settings, DocumentRuntime())
+
+    assert deepseek_kwargs["max_tokens"] == 2048
+    assert deepseek_kwargs["max_tokens_limit"] == 32768
+    assert answerer_kwargs[0]["answer_max_tokens"] == 32768
+    assert answerer_kwargs[0]["answer_thinking_mode"] == "disabled"
     await runtime.close()
 
 

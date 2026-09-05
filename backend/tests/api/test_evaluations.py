@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from pathlib import Path
+
+from fastapi.testclient import TestClient
 
 from app.evaluation.service import (
     EvaluationCase,
     EvaluationCaseResult,
     EvaluationReport,
     EvaluationSet,
+    calculate_report,
 )
 from app.main import create_app
 from app.providers.minimax import EvaluationGeneration
 from app.settings import Settings
-from fastapi.testclient import TestClient
 
 
 def valid_case(source_id: str = "S1") -> EvaluationCase:
@@ -67,8 +70,10 @@ def test_evaluation_routes_assemble_safe_json(tmp_path: Path):
                 answered=True,
                 citation_valid=True,
                 citation_source_ids=("S1",),
+                answer_failure_code="ANSWER_CITATION_INVALID",
                 generation_available=True,
                 source_visibility=True,
+                answer_failure_detail="SOURCE_MARKER",
             ),
         ),
     )
@@ -102,8 +107,56 @@ def test_evaluation_routes_assemble_safe_json(tmp_path: Path):
     safe_result = run.json()["results"][0]
     assert safe_result["generation_available"] is True
     assert safe_result["source_visibility"] is True
+    assert "answer_failure_code" not in safe_result
+    assert "answer_failure_detail" not in safe_result
     assert "answer" not in safe_result
     assert "provider_response" not in safe_result
+
+
+def test_evaluation_report_exposes_industry_aggregates_without_private_ids(
+    tmp_path: Path,
+):
+    evaluation_set = EvaluationSet(
+        set_id="set-industry",
+        cases=(valid_case("private-chunk"),),
+        provider="evaluation",
+        model_id="fictional",
+    )
+    report = calculate_report(
+        [
+            EvaluationCaseResult(
+                case_id="1",
+                question="问题",
+                type="fact",
+                answered=True,
+                expected_source_ids=("private-chunk",),
+                candidate_source_ids=("private-chunk",),
+                evidence_source_ids=("private-chunk",),
+                resolved_citation_source_ids=("private-chunk",),
+            )
+        ]
+    )
+    service = FakeEvaluationService(evaluation_set, report)
+    settings = Settings(
+        _env_file=None,
+        source_documents_dir=tmp_path,
+        sqlite_path=tmp_path / "metadata.sqlite3",
+        qdrant_path=tmp_path / "qdrant",
+    )
+
+    with TestClient(
+        create_app(
+            settings,
+            document_service=object(),
+            rag_service=object(),
+            evaluation_service=service,
+        )
+    ) as client:
+        payload = client.post("/api/evaluations/set-industry/run").json()
+
+    assert payload["industry_metrics"]["protocol_version"] == "task12a-v1"
+    assert "numerator" in payload["industry_metrics"]["generation"]["answer_availability"]
+    assert "private-chunk" not in json.dumps(payload, ensure_ascii=False)
 
 
 def test_evaluation_report_allowlist_exposes_only_boolean_observability_fields(

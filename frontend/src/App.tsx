@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import ChatPage from "./ChatPage";
-import DocumentsPage from "./DocumentsPage";
+import AdminWorkspace from "./AdminWorkspace";
 import { getHealth } from "./api/client";
 import type { RuntimeMode } from "./api/types";
 
@@ -72,7 +72,7 @@ export default function App() {
           <span className="brand-name">{APP_NAME}</span>
           <span className="runtime-badge" role="status" aria-live="polite">{modeLabel}</span>
         </header>
-        {page === "chat" ? <ChatPage /> : <DocumentsPage />}
+        {page === "chat" ? <ChatPage /> : <AdminWorkspace />}
       </main>
     </div>
   );

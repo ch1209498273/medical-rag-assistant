@@ -7,6 +7,7 @@ import logging
 import re
 import sqlite3
 from collections.abc import Mapping, Sequence
+from datetime import date
 from pathlib import Path
 from uuid import uuid4
 
@@ -19,17 +20,27 @@ from app.chat.models import (
 from app.chat.safety import (
     REFERENCE_REASON_CODES,
     is_safe_answer_text,
+    is_safe_id,
     normalize_chat_message,
     normalize_feedback,
     validate_citations,
+    validate_feedback_reason,
     validate_reason_code,
 )
 from app.domain.ports import (
+    AudienceScope,
+    BadCaseRecord,
+    BadCaseStatus,
+    DocumentBusinessMetadata,
+    DocumentBusinessMetadataInput,
     DocumentSummary,
     DocumentVersion,
+    EligibilityResult,
+    FeedbackReason,
     IndexAction,
     VersionStatus,
 )
+from app.evaluation.bad_cases import apply_bad_case_transition, feedback_reason_to_code
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_CHAT_SESSION_TITLE = "新会话"
@@ -39,7 +50,7 @@ MAX_CHAT_SESSION_TITLE_CHARS = 40
 class SqliteDocumentRepository:
     """Persist document metadata while publishing new versions atomically."""
 
-    CURRENT_SCHEMA_VERSION = 3
+    CURRENT_SCHEMA_VERSION = 8
 
     def __init__(self, database_path: Path) -> None:
         database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -79,7 +90,10 @@ class SqliteDocumentRepository:
 
         version = self._read_schema_version()
         if version < self.CURRENT_SCHEMA_VERSION:
-            self._migrate_to_current_schema()
+            if version < 4:
+                self._migrate_to_current_schema()
+            else:
+                self._migrate_incrementally()
         else:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
@@ -123,6 +137,25 @@ class SqliteDocumentRepository:
             )
             """,
             """
+            CREATE TABLE IF NOT EXISTS document_business_metadata (
+                version_id TEXT PRIMARY KEY REFERENCES document_versions(version_id),
+                content_type TEXT NOT NULL CHECK (content_type IN (
+                    'policy', 'training', 'procedure', 'other'
+                )),
+                applicable_scope TEXT NOT NULL CHECK (applicable_scope IN (
+                    'unspecified', 'all_staff', 'nurse', 'doctor', 'pharmacist', 'administrator'
+                )),
+                effective_from TEXT,
+                review_due_at TEXT,
+                business_status TEXT NOT NULL CHECK (business_status IN (
+                    'draft', 'approved', 'superseded', 'retired', 'unknown'
+                )),
+                owner_role TEXT,
+                supersedes_version_id TEXT REFERENCES document_versions(version_id),
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
             CREATE TABLE IF NOT EXISTS chat_sessions (
                 session_id TEXT PRIMARY KEY,
                 title TEXT NOT NULL DEFAULT '新会话',
@@ -141,6 +174,8 @@ class SqliteDocumentRepository:
                 citations_json TEXT NOT NULL DEFAULT '[]',
                 reason_code TEXT,
                 reference_answer TEXT,
+                audience_scope TEXT NOT NULL DEFAULT 'unspecified',
+                workflow_summary_json TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """,
@@ -150,7 +185,21 @@ class SqliteDocumentRepository:
                 session_id TEXT REFERENCES chat_sessions(session_id),
                 message_id TEXT REFERENCES messages(message_id),
                 helpful INTEGER NOT NULL,
+                reason TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS bad_cases (
+                case_id TEXT PRIMARY KEY,
+                message_id TEXT NOT NULL REFERENCES messages(message_id),
+                code TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN (
+                    'new', 'triaged', 'fixed', 'regression_checked', 'closed'
+                )),
+                document_version_id TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """,
             """
@@ -161,6 +210,10 @@ class SqliteDocumentRepository:
             """
             CREATE INDEX IF NOT EXISTS idx_document_versions_active
                 ON document_versions(document_id, status)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_document_business_metadata_status
+                ON document_business_metadata(business_status, applicable_scope)
             """,
         )
         for statement in statements:
@@ -198,6 +251,8 @@ class SqliteDocumentRepository:
                     citations_json TEXT NOT NULL DEFAULT '[]',
                     reason_code TEXT,
                     reference_answer TEXT,
+                    audience_scope TEXT NOT NULL DEFAULT 'unspecified',
+                    workflow_summary_json TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
@@ -222,6 +277,8 @@ class SqliteDocumentRepository:
                 ("citations_json", "TEXT NOT NULL DEFAULT '[]'"),
                 ("reason_code", "TEXT"),
                 ("reference_answer", "TEXT"),
+                ("audience_scope", "TEXT NOT NULL DEFAULT 'unspecified'"),
+                ("workflow_summary_json", "TEXT"),
             )
             for name, definition in additions:
                 if name not in columns:
@@ -238,7 +295,32 @@ class SqliteDocumentRepository:
                     session_id TEXT REFERENCES chat_sessions(session_id),
                     message_id TEXT REFERENCES messages(message_id),
                     helpful INTEGER NOT NULL,
+                    reason TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        else:
+            feedback_columns = {
+                row["name"]
+                for row in self._connection.execute("PRAGMA table_info(feedback)")
+            }
+            if "reason" not in feedback_columns:
+                self._connection.execute("ALTER TABLE feedback ADD COLUMN reason TEXT")
+
+        if not self._table_exists("bad_cases"):
+            self._connection.execute(
+                """
+                CREATE TABLE bad_cases (
+                    case_id TEXT PRIMARY KEY,
+                    message_id TEXT NOT NULL REFERENCES messages(message_id),
+                    code TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN (
+                        'new', 'triaged', 'fixed', 'regression_checked', 'closed'
+                    )),
+                    document_version_id TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
@@ -273,6 +355,10 @@ class SqliteDocumentRepository:
         self._connection.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_feedback_message_id "
             "ON feedback(message_id)"
+        )
+        self._connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_bad_cases_message_code "
+            "ON bad_cases(message_id, code)"
         )
         self._connection.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_terminal_reply "
@@ -408,6 +494,64 @@ class SqliteDocumentRepository:
             raise
         finally:
             self._restore_foreign_keys()
+
+    def _migrate_incrementally(self) -> None:
+        """Apply incremental schema changes while preserving existing rows."""
+
+        self._begin_schema_transaction()
+        try:
+            self._migrate_audience_scope_constraint()
+            self._create_schema_objects()
+            self._ensure_chat_schema()
+            self._write_schema_version()
+            self._connection.commit()
+        except Exception:
+            self._connection.rollback()
+            raise
+        finally:
+            self._restore_foreign_keys()
+
+    def _migrate_audience_scope_constraint(self) -> None:
+        """Rebuild the metadata table so existing DBs accept pharmacist scope."""
+
+        if not self._table_exists("document_business_metadata"):
+            return
+        self._connection.execute("ALTER TABLE document_business_metadata RENAME TO document_business_metadata_old")
+        self._connection.execute(
+            """
+            CREATE TABLE document_business_metadata (
+                version_id TEXT PRIMARY KEY REFERENCES document_versions(version_id),
+                content_type TEXT NOT NULL CHECK (content_type IN (
+                    'policy', 'training', 'procedure', 'other'
+                )),
+                applicable_scope TEXT NOT NULL CHECK (applicable_scope IN (
+                    'unspecified', 'all_staff', 'nurse', 'doctor', 'pharmacist', 'administrator'
+                )),
+                effective_from TEXT,
+                review_due_at TEXT,
+                business_status TEXT NOT NULL CHECK (business_status IN (
+                    'draft', 'approved', 'superseded', 'retired', 'unknown'
+                )),
+                owner_role TEXT,
+                supersedes_version_id TEXT REFERENCES document_versions(version_id),
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        self._connection.execute(
+            """
+            INSERT INTO document_business_metadata(
+                version_id, content_type, applicable_scope, effective_from,
+                review_due_at, business_status, owner_role,
+                supersedes_version_id, updated_at
+            )
+            SELECT version_id, content_type, applicable_scope, effective_from,
+                   review_due_at, business_status, owner_role,
+                   supersedes_version_id, updated_at
+            FROM document_business_metadata_old
+            """
+        )
+        self._connection.execute("DROP TABLE document_business_metadata_old")
 
     def _begin_schema_transaction(self) -> None:
         # SQLite cannot toggle foreign_keys inside a transaction.  The rebuild
@@ -754,7 +898,16 @@ class SqliteDocumentRepository:
                 COALESCE(active.sha256, latest.sha256) AS sha256,
                 COALESCE(active.failure_reason, latest.failure_reason)
                     AS failure_reason,
-                COALESCE(active.created_at, latest.created_at) AS updated_at
+                COALESCE(active.created_at, latest.created_at) AS updated_at,
+                metadata.version_id AS business_version_id,
+                metadata.content_type AS business_content_type,
+                metadata.applicable_scope AS business_applicable_scope,
+                metadata.effective_from AS business_effective_from,
+                metadata.review_due_at AS business_review_due_at,
+                metadata.business_status AS business_status,
+                metadata.owner_role AS business_owner_role,
+                metadata.supersedes_version_id AS business_supersedes_version_id,
+                metadata.updated_at AS business_updated_at
             FROM documents AS d
             LEFT JOIN document_versions AS active
                 ON active.document_id = d.document_id AND active.status = 'active'
@@ -766,6 +919,8 @@ class SqliteDocumentRepository:
                     ORDER BY candidate.created_at DESC, candidate.rowid DESC
                     LIMIT 1
                 )
+            LEFT JOIN document_business_metadata AS metadata
+                ON metadata.version_id = COALESCE(active.version_id, latest.version_id)
             ORDER BY d.file_name COLLATE NOCASE
             """
         ).fetchall()
@@ -778,6 +933,115 @@ class SqliteDocumentRepository:
             (document for document in self.list_documents() if document.document_id == document_id),
             None,
         )
+
+    def get_document_business_metadata(
+        self, document_id: int
+    ) -> DocumentBusinessMetadata | None:
+        """Return metadata for the version currently shown to the local manager."""
+
+        document = self.get_document(document_id)
+        return None if document is None else document.business_metadata
+
+    def upsert_document_business_metadata(
+        self,
+        document_id: int,
+        metadata: DocumentBusinessMetadataInput,
+    ) -> DocumentBusinessMetadata:
+        """Attach controlled business status to this document's display version."""
+
+        document = self.get_document(document_id)
+        if document is None:
+            raise KeyError(document_id)
+        if document.version_id is None:
+            raise ValueError("document has no version")
+        values = _validate_business_metadata_input(metadata)
+        supersedes_version_id = values["supersedes_version_id"]
+        if supersedes_version_id is not None:
+            superseded = self._connection.execute(
+                """
+                SELECT document_id FROM document_versions WHERE version_id = ?
+                """,
+                (supersedes_version_id,),
+            ).fetchone()
+            if superseded is None or int(superseded["document_id"]) != document.document_id:
+                raise ValueError("supersedes version must belong to the same document")
+            if supersedes_version_id == document.version_id:
+                raise ValueError("supersedes version must differ from current version")
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            self._connection.execute(
+                """
+                INSERT INTO document_business_metadata (
+                    version_id, content_type, applicable_scope, effective_from,
+                    review_due_at, business_status, owner_role, supersedes_version_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(version_id) DO UPDATE SET
+                    content_type = excluded.content_type,
+                    applicable_scope = excluded.applicable_scope,
+                    effective_from = excluded.effective_from,
+                    review_due_at = excluded.review_due_at,
+                    business_status = excluded.business_status,
+                    owner_role = excluded.owner_role,
+                    supersedes_version_id = excluded.supersedes_version_id,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (document.version_id, *values.values()),
+            )
+            self._connection.execute("COMMIT")
+        except Exception:
+            if self._connection.in_transaction:
+                self._connection.execute("ROLLBACK")
+            raise
+        result = self.get_document_business_metadata(document_id)
+        if result is None:  # pragma: no cover - protects a broken SQLite write.
+            raise RuntimeError("business metadata write was not persisted")
+        return result
+
+    def eligible_version_ids(
+        self, audience_scope: AudienceScope, as_of: date
+    ) -> EligibilityResult:
+        """Return approved, in-date versions whose scope matches the request."""
+
+        _validate_audience_scope(audience_scope)
+        if not isinstance(as_of, date):
+            raise TypeError("as_of must be a date")
+        rows = self._connection.execute(
+            """
+            SELECT dv.version_id, bm.business_status, bm.applicable_scope,
+                   bm.effective_from, bm.review_due_at
+            FROM document_versions AS dv
+            LEFT JOIN document_business_metadata AS bm
+              ON bm.version_id = dv.version_id
+            WHERE dv.status = 'active'
+            """
+        ).fetchall()
+        if not rows:
+            return EligibilityResult(frozenset(), "DOCUMENT_BUSINESS_STATUS_UNKNOWN")
+        eligible: set[str] = set()
+        has_unknown_status = False
+        requested_scope = "all_staff" if audience_scope == "unspecified" else audience_scope
+        for row in rows:
+            if row["business_status"] != "approved":
+                has_unknown_status = True
+                continue
+            scope = row["applicable_scope"]
+            if scope not in {"all_staff", requested_scope}:
+                continue
+            effective_from = row["effective_from"]
+            review_due_at = row["review_due_at"]
+            if effective_from is not None and effective_from > as_of.isoformat():
+                continue
+            if review_due_at is not None and review_due_at < as_of.isoformat():
+                continue
+            eligible.add(str(row["version_id"]))
+        if eligible:
+            return EligibilityResult(frozenset(eligible), None)
+        reason = (
+            "DOCUMENT_BUSINESS_STATUS_UNKNOWN"
+            if has_unknown_status
+            else "EVIDENCE_SCOPE_UNCLEAR"
+        )
+        return EligibilityResult(frozenset(), reason)
 
     def create_chat_session(self) -> str:
         """Create an opaque session identifier in a short transaction."""
@@ -858,10 +1122,16 @@ class SqliteDocumentRepository:
                 (title, session["session_id"]),
             )
 
-    def append_user_message(self, session_id: str, content: str) -> ChatMessage:
+    def append_user_message(
+        self,
+        session_id: str,
+        content: str,
+        audience_scope: AudienceScope = "unspecified",
+    ) -> ChatMessage:
         """Persist a submitted user question before any provider call."""
 
         _validate_message_text(content)
+        _validate_audience_scope(audience_scope)
         message_id = str(uuid4())
         try:
             self._connection.execute("BEGIN IMMEDIATE")
@@ -877,10 +1147,11 @@ class SqliteDocumentRepository:
             self._connection.execute(
                 """
                 INSERT INTO messages(
-                    message_id, session_id, role, content, status, citations_json
-                ) VALUES (?, ?, 'user', ?, 'submitted', '[]')
+                    message_id, session_id, role, content, status, citations_json,
+                    audience_scope
+                ) VALUES (?, ?, 'user', ?, 'submitted', '[]', ?)
                 """,
-                (message_id, session_id, content),
+                (message_id, session_id, content, audience_scope),
             )
             if (
                 not has_user_message
@@ -933,6 +1204,7 @@ class SqliteDocumentRepository:
         citations: Sequence[Mapping[str, object]],
         reason_code: str | None,
         reference_answer: str | None = None,
+        workflow_summary: Mapping[str, object] | None = None,
     ) -> ChatMessage:
         """Persist one terminal assistant result with a safe citation snapshot."""
 
@@ -996,13 +1268,27 @@ class SqliteDocumentRepository:
             except (TypeError, ValueError) as error:
                 raise ValueError("assistant metadata is not safe") from error
 
+            summary_json: str | None = None
+            if workflow_summary is not None:
+                try:
+                    summary = _validate_workflow_summary(workflow_summary)
+                    summary_json = json.dumps(
+                        summary,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                except (TypeError, ValueError) as error:
+                    raise ValueError("workflow summary is not safe") from error
+
             message_id = str(uuid4())
             self._connection.execute(
                 """
                 INSERT INTO messages(
                     message_id, session_id, role, content, status,
-                    reply_to_message_id, citations_json, reason_code, reference_answer
-                ) VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, ?)
+                    reply_to_message_id, citations_json, reason_code, reference_answer,
+                    workflow_summary_json
+                ) VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     message_id,
@@ -1013,6 +1299,7 @@ class SqliteDocumentRepository:
                     citations_json,
                     reason_code,
                     reference_answer,
+                    summary_json,
                 ),
             )
             row = self._connection.execute(
@@ -1057,11 +1344,19 @@ class SqliteDocumentRepository:
         ).fetchall()
         return [self._message_from_row(row, fallback_session_id=session_id) for row in rows]
 
-    def upsert_feedback(self, message_id: str, helpful: bool) -> Feedback:
-        """Set the sole feedback value for a final assistant message."""
+    def upsert_feedback(
+        self,
+        message_id: str,
+        helpful: bool,
+        reason: FeedbackReason | None = None,
+    ) -> Feedback:
+        """Set feedback and optionally open one aggregate-only bad case."""
 
         if not isinstance(helpful, bool):
             raise TypeError("helpful must be a boolean")
+        reason = validate_feedback_reason(reason, allow_none=True)
+        if helpful and reason is not None:
+            raise ValueError("helpful feedback cannot include a reason")
         try:
             self._connection.execute("BEGIN IMMEDIATE")
             message = self._connection.execute(
@@ -1081,18 +1376,21 @@ class SqliteDocumentRepository:
                 raise ValueError("feedback requires a final assistant message")
             self._connection.execute(
                 """
-                INSERT INTO feedback(feedback_id, session_id, message_id, helpful)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO feedback(feedback_id, session_id, message_id, helpful, reason)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(message_id) DO UPDATE SET
                     session_id = excluded.session_id,
                     helpful = excluded.helpful,
+                    reason = excluded.reason,
                     created_at = CURRENT_TIMESTAMP
                 """,
-                (str(uuid4()), message["session_id"], message_id, int(helpful)),
+                (str(uuid4()), message["session_id"], message_id, int(helpful), reason),
             )
+            if not helpful and reason is not None:
+                self._insert_bad_case(message_id, feedback_reason_to_code(reason))
             row = self._connection.execute(
                 """
-                SELECT message_id, helpful, created_at
+                SELECT message_id, helpful, reason, created_at
                 FROM feedback
                 WHERE message_id = ?
                 """,
@@ -1103,6 +1401,7 @@ class SqliteDocumentRepository:
                 message_id=str(row["message_id"]),
                 helpful=bool(row["helpful"]),
                 created_at=str(row["created_at"]),
+                reason=validate_feedback_reason(row["reason"], allow_none=True),
             )
         except Exception:
             if self._connection.in_transaction:
@@ -1112,7 +1411,7 @@ class SqliteDocumentRepository:
     def get_feedback(self, message_id: str) -> Feedback | None:
         row = self._connection.execute(
             """
-            SELECT message_id, helpful, created_at
+            SELECT message_id, helpful, reason, created_at
             FROM feedback
             WHERE message_id = ?
             """,
@@ -1127,6 +1426,94 @@ class SqliteDocumentRepository:
             message_id=str(safe["message_id"]),
             helpful=bool(safe["helpful"]),
             created_at=str(safe["created_at"]),
+            reason=safe.get("reason"),
+        )
+
+    def create_bad_case(self, message_id: str, code: str) -> BadCaseRecord:
+        """Open a new bad case for a final assistant message idempotently."""
+
+        if not isinstance(code, str) or code not in _BAD_CASE_CODES:
+            raise ValueError("bad case code is invalid")
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            message = self._connection.execute(
+                "SELECT role, status FROM messages WHERE message_id = ?",
+                (message_id,),
+            ).fetchone()
+            if message is None:
+                raise KeyError(f"Unknown chat message: {message_id}")
+            if message["role"] != "assistant" or message["status"] not in {
+                "answered",
+                "refused",
+            }:
+                raise ValueError("bad case requires a final assistant message")
+            self._insert_bad_case(message_id, code)
+            row = self._connection.execute(
+                "SELECT * FROM bad_cases WHERE message_id = ? AND code = ?",
+                (message_id, code),
+            ).fetchone()
+            self._connection.execute("COMMIT")
+            return self._bad_case_from_row(row)
+        except Exception:
+            if self._connection.in_transaction:
+                self._connection.execute("ROLLBACK")
+            raise
+
+    def transition_bad_case(
+        self, case_id: str, target_status: BadCaseStatus
+    ) -> BadCaseRecord:
+        """Advance one case through exactly one controlled lifecycle step."""
+
+        if target_status not in _BAD_CASE_STATUSES:
+            raise ValueError("bad case status is invalid")
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            row = self._connection.execute(
+                "SELECT * FROM bad_cases WHERE case_id = ?", (case_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"Unknown bad case: {case_id}")
+            next_status = apply_bad_case_transition(row["status"], target_status)
+            self._connection.execute(
+                "UPDATE bad_cases SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE case_id = ?",
+                (next_status, case_id),
+            )
+            updated = self._connection.execute(
+                "SELECT * FROM bad_cases WHERE case_id = ?", (case_id,)
+            ).fetchone()
+            self._connection.execute("COMMIT")
+            return self._bad_case_from_row(updated)
+        except Exception:
+            if self._connection.in_transaction:
+                self._connection.execute("ROLLBACK")
+            raise
+
+    def list_bad_case_aggregates(self) -> dict[str, dict[str, int]]:
+        """Return code/status counts only; no message or source fields."""
+
+        rows = self._connection.execute(
+            """
+            SELECT code, status, COUNT(*) AS count
+            FROM bad_cases
+            GROUP BY code, status
+            ORDER BY code ASC, status ASC
+            """
+        ).fetchall()
+        result: dict[str, dict[str, int]] = {}
+        for row in rows:
+            result.setdefault(str(row["code"]), {})[str(row["status"])] = int(
+                row["count"]
+            )
+        return result
+
+    def _insert_bad_case(self, message_id: str, code: str) -> None:
+        self._connection.execute(
+            """
+            INSERT OR IGNORE INTO bad_cases(
+                case_id, message_id, code, status, document_version_id
+            ) VALUES (?, ?, ?, 'new', NULL)
+            """,
+            (str(uuid4()), message_id, code),
         )
 
     def schema_version(self) -> int:
@@ -1150,6 +1537,19 @@ class SqliteDocumentRepository:
 
     @staticmethod
     def _summary_from_row(row: sqlite3.Row) -> DocumentSummary:
+        metadata = None
+        if row["business_version_id"] is not None:
+            metadata = DocumentBusinessMetadata(
+                version_id=str(row["business_version_id"]),
+                content_type=row["business_content_type"],
+                applicable_scope=row["business_applicable_scope"],
+                effective_from=row["business_effective_from"],
+                review_due_at=row["business_review_due_at"],
+                business_status=row["business_status"],
+                owner_role=row["business_owner_role"],
+                supersedes_version_id=row["business_supersedes_version_id"],
+                updated_at=str(row["business_updated_at"]),
+            )
         return DocumentSummary(
             document_id=int(row["document_id"]),
             file_name=str(row["file_name"]),
@@ -1158,6 +1558,7 @@ class SqliteDocumentRepository:
             sha256=None if row["sha256"] is None else str(row["sha256"]),
             failure_reason=row["failure_reason"],
             updated_at=None if row["updated_at"] is None else str(row["updated_at"]),
+            business_metadata=metadata,
         )
 
     @staticmethod
@@ -1169,7 +1570,34 @@ class SqliteDocumentRepository:
             raw["citations"] = json.loads(raw.get("citations_json") or "[]")
         except (TypeError, ValueError, json.JSONDecodeError):
             raw["citations"] = None
+        summary_json = raw.get("workflow_summary_json")
+        if summary_json is not None:
+            try:
+                raw["workflow_summary"] = json.loads(summary_json)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                # Keep corrupted metadata distinct from legacy NULL so the
+                # safety normalizer can degrade the whole row safely.
+                raw["workflow_summary"] = {"_invalid": True}
+        else:
+            raw["workflow_summary"] = None
         return normalize_chat_message(raw, fallback_session_id=fallback_session_id)
+
+    @staticmethod
+    def _bad_case_from_row(row: sqlite3.Row) -> BadCaseRecord:
+        if row is None:
+            raise RuntimeError("bad case row was not found")
+        return BadCaseRecord(
+            case_id=str(row["case_id"]),
+            code=str(row["code"]),
+            status=row["status"],
+            document_version_id=(
+                None
+                if row["document_version_id"] is None
+                else str(row["document_version_id"])
+            ),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
 
 
 def _validate_message_text(value: str, *, allow_empty: bool = False) -> None:
@@ -1183,6 +1611,18 @@ def _validate_message_text(value: str, *, allow_empty: bool = False) -> None:
         raise ValueError("message content is unsafe")
 
 
+def _validate_workflow_summary(value: Mapping[str, object]) -> dict[str, object]:
+    """Validate and normalize the finite workflow summary contract."""
+
+    from app.agents.contracts import WorkflowSummary
+
+    summary = WorkflowSummary.model_validate(value)
+    # The Pydantic contract owns shape/ranges. Storage additionally restricts
+    # the optional reason to the public reason-code allowlist.
+    validate_reason_code(summary.reason_code, allow_none=True)
+    return summary.model_dump()
+
+
 def _derive_chat_session_title(content: str) -> str:
     if not isinstance(content, str) or not content.strip() or not is_safe_answer_text(content):
         return DEFAULT_CHAT_SESSION_TITLE
@@ -1190,3 +1630,75 @@ def _derive_chat_session_title(content: str) -> str:
     if len(compact) <= MAX_CHAT_SESSION_TITLE_CHARS:
         return compact or DEFAULT_CHAT_SESSION_TITLE
     return compact[: MAX_CHAT_SESSION_TITLE_CHARS - 1] + "…"
+
+
+_CONTENT_TYPES = frozenset({"policy", "training", "procedure", "other"})
+_AUDIENCE_SCOPES = frozenset(
+    {"unspecified", "all_staff", "nurse", "doctor", "pharmacist", "administrator"}
+)
+_BUSINESS_STATUSES = frozenset(
+    {"draft", "approved", "superseded", "retired", "unknown"}
+)
+_BAD_CASE_CODES = frozenset(
+    {
+        "USER_FEEDBACK_NOT_ANSWERED",
+        "USER_FEEDBACK_MISSING_STEP",
+        "USER_FEEDBACK_VERSION_MISMATCH",
+        "USER_FEEDBACK_CITATION_MISMATCH",
+        "USER_FEEDBACK_TOO_SLOW",
+    }
+)
+_BAD_CASE_STATUSES = frozenset(
+    {"new", "triaged", "fixed", "regression_checked", "closed"}
+)
+
+
+def _validate_business_metadata_input(
+    metadata: DocumentBusinessMetadataInput,
+) -> dict[str, object]:
+    if metadata.content_type not in _CONTENT_TYPES:
+        raise ValueError("content_type is invalid")
+    if metadata.applicable_scope not in _AUDIENCE_SCOPES:
+        raise ValueError("applicable_scope is invalid")
+    if metadata.business_status not in _BUSINESS_STATUSES:
+        raise ValueError("business_status is invalid")
+    effective_from = _normalize_iso_date(metadata.effective_from, "effective_from")
+    review_due_at = _normalize_iso_date(metadata.review_due_at, "review_due_at")
+    owner_role = metadata.owner_role
+    if owner_role is not None:
+        if not isinstance(owner_role, str) or not owner_role.strip() or len(owner_role) > 80:
+            raise ValueError("owner_role is invalid")
+        owner_role = owner_role.strip()
+        if not is_safe_answer_text(owner_role):
+            raise ValueError("owner_role is invalid")
+    supersedes_version_id = metadata.supersedes_version_id
+    if supersedes_version_id is not None and not is_safe_id(supersedes_version_id):
+        raise ValueError("supersedes version is invalid")
+    return {
+        "content_type": metadata.content_type,
+        "applicable_scope": metadata.applicable_scope,
+        "effective_from": effective_from,
+        "review_due_at": review_due_at,
+        "business_status": metadata.business_status,
+        "owner_role": owner_role,
+        "supersedes_version_id": supersedes_version_id,
+    }
+
+
+def _normalize_iso_date(value: str | None, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} date is invalid")
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as error:
+        raise ValueError(f"{field_name} date is invalid") from error
+    if parsed.isoformat() != value:
+        raise ValueError(f"{field_name} date is invalid")
+    return value
+
+
+def _validate_audience_scope(value: object) -> None:
+    if value not in _AUDIENCE_SCOPES:
+        raise ValueError("audience_scope is invalid")

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from app.domain.ports import AudienceScope, FeedbackReason
+
 AssistantMessageStatus = Literal["answered", "refused", "error"]
 
 
@@ -23,6 +25,10 @@ class ChatMessage:
     created_at: str
     reply_to_message_id: str | None = None
     reference_answer: str | None = None
+    audience_scope: AudienceScope = "unspecified"
+    # Optional, safe execution facts from the candidate workflow.  Keeping
+    # this at the end preserves positional construction of legacy messages.
+    workflow_summary: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -69,3 +75,4 @@ class Feedback:
     message_id: str
     helpful: bool
     created_at: str
+    reason: FeedbackReason | None = None

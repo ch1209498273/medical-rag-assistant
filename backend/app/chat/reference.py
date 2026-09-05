@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, StrictStr
 
 from app.chat.safety import ABSOLUTE_PATH_RE, is_safe_answer_text
-from app.rag.retrieval import clean_question
+from app.rag.query import clean_question
 
 MAX_REFERENCE_ANSWER_CHARS = 4000
 
