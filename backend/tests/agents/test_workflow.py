@@ -5,7 +5,6 @@ from datetime import date
 from unittest.mock import AsyncMock
 
 import pytest
-
 from app.agents.budget import (
     RequestBudget,
     consume_current_request,

@@ -1,7 +1,6 @@
 import pytest
-from pydantic import ValidationError
-
 from app.settings import Settings
+from pydantic import ValidationError
 
 
 def test_siliconflow_free_only_defaults_to_approved_models() -> None:

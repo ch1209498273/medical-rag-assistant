@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from app.evaluation.protocol import (
     TASK12A_PROTOCOL,
     EvaluationRunMetadata,

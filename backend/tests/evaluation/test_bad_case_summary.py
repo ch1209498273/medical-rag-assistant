@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import json
 import importlib.util
+import json
 
 import pytest
-
 from app.storage.sqlite import SqliteDocumentRepository
 
 

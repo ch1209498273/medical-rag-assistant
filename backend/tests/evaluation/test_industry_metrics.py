@@ -4,7 +4,6 @@ import math
 from pathlib import Path
 
 import pytest
-
 from app.evaluation.industry_metrics import (
     binary_rate,
     ndcg_at_k,

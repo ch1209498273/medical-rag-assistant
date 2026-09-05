@@ -5,9 +5,8 @@ from xml.etree import ElementTree
 
 import fitz
 import pytest
-from docx import Document
-
 from app.ingestion.extractors import UnsupportedDocumentError, extract_document
+from docx import Document
 
 _WORD_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _MARKUP_COMPATIBILITY_NAMESPACE = (

@@ -3,11 +3,10 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
-from pydantic import ValidationError
-
 from app.agents.budget import WorkflowBudgetExceeded
 from app.agents.contracts import RouteDecision, WorkflowSummary
 from app.agents.router import ROUTER_SYSTEM_PROMPT, DeepSeekRouter, RouterUnavailable
+from pydantic import ValidationError
 
 
 @pytest.mark.parametrize(

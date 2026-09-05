@@ -7,10 +7,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
-
 from app.main import create_app
 from app.settings import Settings
+from fastapi.testclient import TestClient
 
 
 @dataclass

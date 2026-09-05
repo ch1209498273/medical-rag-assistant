@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from app.domain.models import Chunk, SourceRef
 from app.domain.ports import EligibilityResult, SearchHit
 from app.providers.siliconflow import RankedItem

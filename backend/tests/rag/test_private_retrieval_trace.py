@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pytest
-
 from app.domain.models import Chunk, SourceRef
 from app.domain.ports import SearchHit
 from app.rag.answering import RagService

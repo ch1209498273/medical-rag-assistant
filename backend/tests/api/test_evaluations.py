@@ -5,8 +5,6 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-
 from app.evaluation.service import (
     EvaluationCase,
     EvaluationCaseResult,
@@ -17,6 +15,7 @@ from app.evaluation.service import (
 from app.main import create_app
 from app.providers.minimax import EvaluationGeneration
 from app.settings import Settings
+from fastapi.testclient import TestClient
 
 
 def valid_case(source_id: str = "S1") -> EvaluationCase:

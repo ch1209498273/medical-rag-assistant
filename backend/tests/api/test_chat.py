@@ -4,8 +4,6 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
-
 from app.api.chat import _safe_event
 from app.chat.history import HistoryContextBuilder
 from app.chat.orchestrator import ChatOrchestrator
@@ -13,6 +11,7 @@ from app.main import create_app
 from app.rag.models import ChatEvent
 from app.settings import Settings
 from app.storage.sqlite import SqliteDocumentRepository
+from fastapi.testclient import TestClient
 
 
 def test_rag_runtime_closes_deepseek_before_document_resources():

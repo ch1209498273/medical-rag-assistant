@@ -7,7 +7,6 @@ import sqlite3
 from datetime import date
 
 import pytest
-
 from app.domain.ports import DocumentBusinessMetadataInput
 from app.storage.sqlite import SqliteDocumentRepository
 
