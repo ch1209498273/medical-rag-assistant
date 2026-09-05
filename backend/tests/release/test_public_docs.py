@@ -320,12 +320,13 @@ def test_public_readme_leads_with_reference_implementation_not_demo_only():
     assert "工程亮点" in readme
 
 
-def test_release_evidence_does_not_claim_an_unverified_tag_or_remote_release():
+def test_release_evidence_records_remote_verification_without_overclaiming_release_assets():
     evidence = (PROJECT_ROOT / "docs" / "release-evidence.md").read_text(
         encoding="utf-8"
     )
 
-    assert "远程状态需在发布前核验" in evidence
+    assert "远程提交与本地发布提交一致" in evidence
+    assert "未使用 force-push" in evidence
     assert "未创建或推送 Git tag" in evidence
 
 
