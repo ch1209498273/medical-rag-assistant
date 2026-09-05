@@ -20,6 +20,7 @@
 | 知识工程 | PDF/DOCX 解析、Chunk、页码/段落定位、版本状态和 active 过滤 | [系统架构](architecture.md) |
 | RAG 质量判断 | 把召回、重排、答案合同、引用核验和拒答分开测；不以回答数量单独晋级 | [评测与回滚](evaluation.md) |
 | 工程交付 | FastAPI、React、SQLite、Qdrant Local、SSE、会话历史、反馈审核和无网络 Demo | [Demo 指南](demo-guide.md) |
+| Agent/Workflow 工程 | 严格路由合同、预算 transport、显式 fallback 和 2A 对照；默认产品仍不启用运行时多 Agent | [多 Agent 开发](multi-agent-development.md) |
 | 研发治理 | 任务边界、基线、测试、安全复核和文档交接；开发多 Agent 不等于运行时多 Agent | [多 Agent 开发](multi-agent-development.md) |
 
 ## 三个可以现场讲清楚的案例
@@ -38,6 +39,17 @@
 
 资料版本、评测集版本、反馈脱敏、管理员审核和晋级条件分别有边界。用户反馈不会直接改 Prompt，也不会自动进入黄金集；它先形成可审核的 Bad Case，再由人工决定是否进入修复和回归。
 
+## 最近一轮真正落地的工程变化
+
+这些变化不是“计划中的想法”，而是已经有代码、私有报告或冻结记录支撑的工程资产；它们与公开 Demo 的默认路径仍然分开：
+
+1. **知识库与切分：** Task15 将 8 册 `2026-standard-manual-v1` 放入隔离 staging，以 Docling `HybridChunker` 为主候选、Legacy 确定性切分为 fallback。首轮为 1,114/1,147 片对照，定位修复版达到 1,114/1,114 可定位，并保留段落/表格定位；第 9 册以后续增量版本加入。
+   源项目已将旧索引和旧 staging 运行包本地可恢复归档，最新 staging 是唯一保留的最新知识资产；正式运行接入仍需独立迁移与验收，公开仓库不包含真实资料。
+2. **检索逻辑：** 生产默认仍是 Vector → 去重 → Reranker → `0.35` 门；Task14D/E/F 和 Task18 在 staging 里增加 lexical 分支与 balanced RRF（`k=60`），对照显示 Recall@20 `0.607→0.679`，但回答可用率 `72.5%→68.75%`、引用有效率 `77.5%→76.25%`、时延约 `2.00→2.28s`，所以保留实验、不切换默认。
+3. **Agent 工作流：** `backend/app/agents` 已实现严格 Router、预算/超时、预接线变体、答案缓冲和 baseline fallback；历史 30 题 A/C 对照暴露过 Router 合同适配问题，修复后仍保持默认关闭。它展示的是 Agent 工程治理和可回退实验，不把开发协作包装成已上线的运行时多 Agent。
+
+当前 80 题黄金集的身份是 `final-ai-validated-20260904-005`（64 可回答 + 16 无答案），Task18 的 vector、hybrid 和诊断结果均绑定到该题集与 `RUN-20260904-004`；早期 30 题只用于解释回滚和方法演进。
+
 ## 我的贡献如何表述
 
 - **我负责：** 业务范围、优先级、资料边界、验收指标、方案取舍、回滚决定和最终公开范围。
@@ -51,8 +63,8 @@
 1. 运行[无 Key Demo](demo-guide.md)，观察一个有引用答案、一个资料外拒答和一次会话追问；
 2. 看[系统架构](architecture.md)，理解资料、检索、答案合同和 SQLite/Qdrant 的边界；
 3. 看[工程决策](engineering-decisions.md)和[评测与回滚](evaluation.md)，追问为什么保留基线；
-4. 最后看代码中的 `backend/app/rag`、`backend/app/ingestion`、`backend/app/feedback` 和对应测试。
+4. 最后看代码中的 `backend/app/ingestion`、`backend/app/rag`、`backend/app/agents`、`backend/app/feedback` 和对应测试。
 
 ## 当前状态边界
 
-默认公开 Demo 是单一 RAG 工作流。文档解析、反馈审核和开发治理代码可以复核；Docling staging、混合检索、云端评测和运行时 Agent 路由属于单独实验或 v2 候选，不应在面试中混称为默认生产能力。
+默认公开 Demo 是单一 RAG 工作流。Docling staging、混合检索和 AgentWorkflow 已有实现与私有评测记录，但默认产品仍不启用这些实验；面向用户的运行时多 Agent、登录 ACL 和多知识域仍属于 v2 候选，不应在面试中混称为默认生产能力。

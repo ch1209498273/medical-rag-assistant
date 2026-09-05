@@ -161,7 +161,8 @@ Cloud 也只绑定本机地址；分别在两个终端使用 `Ctrl+C` 停止。�
 - 结构化 `refused`/`answer` 答案合同，答案先完整缓冲，引用集合通过后才显示；
 - 缺证据、模型拒答、Provider 不可用、答案不可核验等固定 reason code；
 - 连续会话、追问改写、历史恢复、正式答案与未核验通用参考分栏；
-- 2A 开发验收用的受控候选工作流合同、预算估算和零出网预检；默认产品请求仍走单一 RAG 编排，未将实验自动升级为正式能力；
+- Task15 的 Docling/Legacy 隔离 staging、可定位切片 manifest 与混合检索实验记录；
+- 2A 开发验收用的受控 AgentWorkflow 合同、Router、预算 transport、baseline fallback 和零出网预检；默认产品请求仍走单一 RAG 编排，未将实验自动升级为正式能力；
 - 确定性 Demo Provider：本地 1024 维向量、词法重排、登记场景匹配和安全拒答；
 - 显式 Demo/Cloud 健康状态，以及不泄露凭据的 Windows 启动、停止和 Demo smoke 脚本；
 - 白名单式公开导出边界，独立公开副本不携带真实资料、数据库、日志、Key 或内部执行记录。
@@ -192,6 +193,18 @@ PDF/DOCX
 5. 证据放在明确边界内送入 Demo Language Model 或 Cloud DeepSeek。Demo 只精确匹配已登记场景，不执行问题或证据里的指令；
 6. 答案在内存中完整缓冲，解析双字段 JSON，检查文本安全、来源编号和可定位引用。任一检查失败都整条拒答；
 7. 通过后才发出 `answer_delta` 和 `final` SSE 事件，并把会话、状态、引用和反馈写入 SQLite。
+
+### 最近一轮工程演进
+
+项目近期不是只“换了一个模型”，而是沿着知识、检索、回答和 Agent 四层逐步做了可回滚的实验：
+
+- **知识层（Task15）：** 8 册 `2026-standard-manual-v1` 在隔离 staging 中使用 Docling `HybridChunker` 主候选、Legacy fallback；定位修复后保留 1,114 个 chunk identity，1,114/1,114 可定位（段落 146、表格 968）。真实手册和切片正文不进入公开仓库。
+- **知识生命周期：** 源项目已将旧索引与旧 staging 运行包移入本地可恢复归档，最新标准手册 staging 作为唯一最新知识资产保留；staging 到正式运行库仍需独立迁移、回归和验收，公开 Demo 不宣称已上线真实手册。
+- **检索层（Task14/18）：** 生产仍是 Vector → 去重 → Reranker；staging 另做 Vector + lexical + balanced RRF（`k=60`）对照。最终 R1 的 Recall@20 `0.607→0.679`，但回答可用率 `72.5%→68.75%`、引用有效率 `77.5%→76.25%`、时延约 `2.00→2.28s`，因此只保留为实验，不自动切换。
+- **评测层（Task16/18）：** 当前黄金集固定为 `final-ai-validated-20260904-005`，80 题（64 可回答 + 16 无答案）；Task18 的 vector、hybrid、D1/F/H 结果都绑定该题集与 `RUN-20260904-004`。早期 30 题仍保留作历史回滚证据。
+- **Agent 层（2A）：** `backend/app/agents` 实现严格 Router、预接线工作流变体、预算/超时、失败分类和 baseline fallback；历史 A/C 对照暴露了 Router 合同适配问题并已记录。它是默认关闭的开发实验，不是面向用户的运行时多 Agent。
+
+完整版本—结果—决策映射见 [评测与回滚](docs/evaluation.md)、[系统架构](docs/architecture.md) 和 [多 Agent 开发](docs/multi-agent-development.md)。
 
 ## 评测与回滚
 
@@ -247,7 +260,7 @@ v1 选择 SQLite + Qdrant Local，换取本机可复现、低运维和不依赖�
 - 无登录、角色授权、ACL、患者端、审计后台或公网部署；本机 local storage 不是多用户安全边界；
 - Demo 的 OCR 不伪造图片识别结果；Cloud OCR/模型调用需要运行者自己的 Key、网络和费用；
 - 引用门证明来源结构和定位，不等于模型答案在语义上或医学上正确；公开 Demo 不提供临床决策支持；
-- MySQL、Qdrant Server、运行时多 Agent、多知识域和完整人工评测属于 v2.0；
+- MySQL、Qdrant Server、面向用户的运行时多 Agent、多知识域和公网部署仍属于 v2.0；仓库已包含默认关闭的 2A AgentWorkflow 评测实现，但不把它当作正式运行时能力；
 - 远程仓库、CI、Git tag 和 GitHub Release 的状态必须逐项核验；本地专业化整理完成前，不把任何远程状态或徽章写成既成事实。
 
 ## v2.0 路线
