@@ -18,6 +18,10 @@
 
 本轮未创建或推送 Git tag，未创建 GitHub Release，也未修改仓库 topics、About 或其他远程设置；只同步通过本地发布门的代码、测试和文档提交。GitHub Actions 的状态仍以仓库页面实时结果为准，本地发布记录不代替 CI 结果。
 
+## 最新远程 CI 核验（2026-09-05）
+
+公开副本提交 `95a3931915f52539b37ac176e5f846d550569bc5` 推送后，GitHub Actions run `33974447579` 的 `verify` job 已完成并成功。该 run 的 Ruff、后端 pytest、`npm ci`、前端测试、前端构建、零网络 Demo smoke 和 `validate_public_release.py --history` 均为 `success`；它只证明公开工程流水线和边界检查通过，不代表医疗准确率、临床 UAT 或上线批准。
+
 ## 推荐复核顺序
 
 1. 从独立公开副本运行 `scripts/demo_smoke.py --no-network`，确认零网络。
