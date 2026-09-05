@@ -12,11 +12,11 @@
 - 后端/前端测试、构建、公开发布校验和安全扫描是本地发布门；每次准备发布都应重新执行，不能沿用旧截图或旧计数。
 - `CHANGELOG.md` 记录公开副本的面向读者变更；它不是虚构 Git tag 或 GitHub Release 的替代品。
 
-## 远程发布门
+## 远程发布记录
 
-**远程状态需在发布前核验。** 在本地验证通过后，才可以检查远程仓库默认分支、最新 CI、tag、Release、分支保护和实际待推送差异；这些远程事实不应由 README 或本文件预先假定。
+本轮在本地发布门通过后核对了远程 `main` 基线，使用普通 fast-forward 将公开副本推送到 GitHub，并用 `git ls-remote origin refs/heads/main` 核验远程提交与本地发布提交一致。未使用 force-push。
 
-本轮未创建或推送 Git tag，未创建 GitHub Release，也未修改仓库 topics、About 或其他远程设置；只同步通过本地发布门的代码、测试和文档提交。远程分支是否已更新，以发布后 `git ls-remote` 和 GitHub Actions 结果为准。
+本轮未创建或推送 Git tag，未创建 GitHub Release，也未修改仓库 topics、About 或其他远程设置；只同步通过本地发布门的代码、测试和文档提交。GitHub Actions 的状态仍以仓库页面实时结果为准，本地发布记录不代替 CI 结果。
 
 ## 推荐复核顺序
 
@@ -24,7 +24,7 @@
 2. 运行公开文档合同、后端测试、前端测试与前端构建。
 3. 对 fresh whitelist export 运行 `validate_public_release.py` 与 `security_scan.py`，再比较导出目录和公开副本差异。
 4. 检查 `git status`、`git diff --check` 与本地 tag 列表；确认没有真实资料、密钥、数据库、日志、路径、私有评测或原始 Provider 输出。
-5. 将验证结果、待推送提交和远程状态记录在交付说明中，再执行用户已授权的单一分支推送；推送后重新核验远程提交和 CI，不使用 force-push。
+5. 将验证结果、发布提交和远程核验结果记录在交付说明中；推送后重新核验远程提交和 CI，不使用 force-push。
 
 ## 诚实范围
 

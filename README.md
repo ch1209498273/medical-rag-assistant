@@ -4,7 +4,7 @@
 
 > Medical Knowledge Q&A Assistant — a local-first, evidence-grounded RAG portfolio project.
 
-**当前公开状态：** 本地独立公开副本候选已生成并通过公开边界校验；远程状态仍需在发布前核验。详见[发布证据与远程发布门](docs/release-evidence.md)。
+**当前公开状态：** v1 公开副本已同步到 GitHub `main`，并用 `git ls-remote` 核验远程提交与本地发布提交一致。详见[发布证据与远程发布门](docs/release-evidence.md)。
 
 > **边界提醒：** 这是一个面向本机演示和工程学习的作品集项目。公开 Demo 使用完全虚构的资料，不代表真实医疗制度、医保规则或诊疗建议；它不是公网服务，也不替代专业人员判断。
 
