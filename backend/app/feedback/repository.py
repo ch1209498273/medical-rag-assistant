@@ -210,6 +210,21 @@ class FeedbackProjectionRepository:
         FeedbackProjectionSchema.insert_promotion(self._connection, record)
         self._connection.commit()
 
+    def update_promotion_status(self, case_id: str, promotion_status: str) -> None:
+        """Record the controlled candidate state without rewriting review history."""
+
+        allowed = {"not_promoted", "silver", "golden_v2_candidate", "golden_v2"}
+        if promotion_status not in allowed:
+            raise ValueError("promotion status is invalid")
+        cursor = self._connection.execute(
+            "UPDATE feedback_cases SET promotion_status = ? WHERE case_id = ?",
+            (promotion_status, case_id),
+        )
+        if cursor.rowcount != 1:
+            self._connection.rollback()
+            raise KeyError(case_id)
+        self._connection.commit()
+
     def update_triage(self, case_id: str, priority: str, score: int, reasons: tuple[str, ...]) -> None:
         """Update only deterministic triage fields on an existing projection case."""
 

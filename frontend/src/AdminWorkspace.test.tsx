@@ -17,4 +17,10 @@ describe("AdminWorkspace", () => {
     await userEvent.setup().click(screen.getByRole("tab", { name: "反馈审核" }));
     expect(screen.getByText("反馈审核内容")).toBeInTheDocument();
   });
+
+  it("supports a deep link that opens the feedback tab for a demo or review capture", () => {
+    render(<AdminWorkspace initialTab="feedback" />);
+    expect(screen.getByRole("tab", { name: "反馈审核" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("反馈审核内容")).toBeInTheDocument();
+  });
 });

@@ -828,6 +828,49 @@ h2 {
   background: var(--surface);
 }
 
+.data-flywheel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0.85rem 0 1rem;
+  padding: 0.75rem;
+  border: 1px solid #b9d9d3;
+  border-radius: 0.65rem;
+  background: linear-gradient(120deg, #effaf7, #f8fbfa);
+  color: var(--teal-900);
+  font-size: 0.82rem;
+}
+
+.data-flywheel strong {
+  margin-right: 0.25rem;
+}
+
+.flywheel-step {
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.flywheel-step.done {
+  border-color: #9acfc4;
+  color: var(--teal-900);
+}
+
+.flywheel-step.active {
+  border-color: var(--teal-700);
+  background: var(--teal-700);
+  color: #fff;
+}
+
+.flywheel-arrow {
+  color: var(--teal-700);
+  font-weight: 800;
+}
+
 .feedback-filters {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -850,6 +893,7 @@ h2 {
 
 .feedback-filters input,
 .feedback-filters select,
+.feedback-review-form input,
 .feedback-review-form select {
   min-height: 2.3rem;
   padding: 0.4rem 0.5rem;
@@ -1014,6 +1058,25 @@ h2 {
 .promotion-check p {
   margin: 0.35rem 0;
   color: var(--muted);
+}
+
+.promotion-form {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.8rem;
+  border: 1px solid #9acfc4;
+  border-radius: 0.55rem;
+  background: #effaf7;
+}
+
+.promotion-form h3 {
+  margin-bottom: 0;
+}
+
+.promotion-help {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
 }
 
 .review-history {

@@ -3,14 +3,15 @@ import { useState, type ReactNode } from "react";
 import DocumentsPage from "./DocumentsPage";
 import FeedbackReviewPage from "./FeedbackReviewPage";
 
-type AdminTab = "documents" | "feedback";
+export type AdminTab = "documents" | "feedback";
 
 export type AdminWorkspaceProps = {
   feedbackPage?: ReactNode;
+  initialTab?: AdminTab;
 };
 
-export default function AdminWorkspace({ feedbackPage }: AdminWorkspaceProps) {
-  const [tab, setTab] = useState<AdminTab>("documents");
+export default function AdminWorkspace({ feedbackPage, initialTab = "documents" }: AdminWorkspaceProps) {
+  const [tab, setTab] = useState<AdminTab>(initialTab);
 
   return (
     <section className="admin-workspace" aria-labelledby="admin-workspace-title">

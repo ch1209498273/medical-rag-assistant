@@ -9,7 +9,11 @@ from uuid import uuid4
 
 from app.feedback.evidence import EvidenceBundle
 from app.feedback.models import ReviewDecision
-from app.feedback.promotion import EvidenceCheck, evaluate_promotion
+from app.feedback.promotion import (
+    EvidenceCheck,
+    build_promotion_record,
+    evaluate_promotion,
+)
 from app.feedback.review_service import FeedbackQueueFilters
 
 _SAFE_CODE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
@@ -27,6 +31,15 @@ class ReviewSubmissionRequest(BaseModel):
     safety_ok: StrictBool | None = None
     note_code: StrictStr | None = None
     review_version: StrictStr
+
+
+class PromotionSubmissionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    target_set_id: StrictStr
+    target_version: StrictStr
+    target_split: Literal["dev", "holdout"]
+    manifest_id: StrictStr
 
 
 def create_feedback_review_router() -> APIRouter:
@@ -127,6 +140,61 @@ def create_feedback_review_router() -> APIRouter:
             "promotion": _promotion_check(request, case_id, evidence),
         }
 
+    @router.post("/cases/{case_id}/promote")
+    async def promote_case(
+        case_id: str,
+        payload: PromotionSubmissionRequest,
+        request: Request,
+    ) -> dict[str, object]:
+        service = _service(request)
+        detail = service.get_case(case_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="FEEDBACK_CASE_NOT_FOUND")
+        if not all(
+            _is_safe_code(value)
+            for value in (
+                payload.target_set_id,
+                payload.target_version,
+                payload.manifest_id,
+            )
+        ):
+            raise HTTPException(status_code=400, detail="FEEDBACK_PROMOTION_INVALID")
+        repository = getattr(service, "repository", None)
+        if repository is None:
+            raise HTTPException(status_code=503, detail="FEEDBACK_REVIEW_UNAVAILABLE")
+        evidence = _resolve_evidence(request, detail)
+        decision = _promotion_decision(request, case_id, evidence, payload.target_split)
+        if decision.status != "golden_v2_candidate":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "FEEDBACK_PROMOTION_BLOCKED",
+                    "promotion": decision.to_dict(),
+                },
+            )
+        record = build_promotion_record(
+            next(
+                item for item in repository.list_cases(limit=1000) if item.case_id == case_id
+            ),
+            decision,
+            target_set_id=payload.target_set_id,
+            target_version=payload.target_version,
+            target_split=payload.target_split,
+            manifest_id=payload.manifest_id,
+            promoted_at=datetime.now(timezone.utc).isoformat(),
+        )
+        try:
+            repository.save_promotion(record)
+            repository.update_promotion_status(case_id, decision.status)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail="FEEDBACK_PROMOTION_ALREADY_RECORDED") from error
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="FEEDBACK_CASE_NOT_FOUND") from error
+        return {
+            "promotion": decision.to_dict(),
+            "record": _safe_promotion_response(record),
+        }
+
     @router.get("/cases/{case_id}/promotion-check")
     async def promotion_check(case_id: str, request: Request) -> dict[str, object]:
         _service(request)
@@ -162,6 +230,15 @@ def _resolve_evidence(request: Request, detail_or_case) -> EvidenceBundle:
 
 
 def _promotion_check(request: Request, case_id: str, evidence: EvidenceBundle) -> dict[str, object]:
+    return _promotion_decision(request, case_id, evidence, "dev").to_dict()
+
+
+def _promotion_decision(
+    request: Request,
+    case_id: str,
+    evidence: EvidenceBundle,
+    target_split: str,
+):
     service = request.app.state.feedback_review_service
     detail = service.get_case(case_id)
     if detail is None:
@@ -180,7 +257,7 @@ def _promotion_check(request: Request, case_id: str, evidence: EvidenceBundle) -
             evidence_check=None,
             corpus_check=None,
             review_decisions=reviews,
-            target_split="dev",
+            target_split=target_split,
         )
     else:
         evidence_check = EvidenceCheck(
@@ -195,9 +272,21 @@ def _promotion_check(request: Request, case_id: str, evidence: EvidenceBundle) -
             evidence_check=evidence_check,
             corpus_check=None,
             review_decisions=reviews,
-            target_split="dev",
+            target_split=target_split,
         )
-    return decision.to_dict()
+    return decision
+
+
+def _safe_promotion_response(record) -> dict[str, object]:
+    return {
+        "promotion_id": record.promotion_id,
+        "target_set_id": record.target_set_id,
+        "target_version": record.target_version,
+        "target_split": record.target_split,
+        "promotion_reason": record.promotion_reason,
+        "manifest_id": record.manifest_id,
+        "promoted_at": record.promoted_at,
+    }
 
 
 def _safe_review_response(review: ReviewDecision) -> dict[str, object]:

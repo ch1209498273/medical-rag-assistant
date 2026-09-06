@@ -26,7 +26,7 @@ indexed_documents=8 answered_questions=2 refused_questions=1 network_calls=0
 
 ## 视觉素材预览
 
-这些图片和短 GIF 都由本机 Demo 在同一 `1440×900` 视口中捕获，内容只来自四份虚构资料。可在[媒体清单](assets/manifest.json)中核对文件哈希、尺寸和审核状态。
+这些图片和短 GIF 都由本机 Demo 或合成管理员 fixture 捕获。聊天/资料素材使用 `1440×900` 视口；反馈审核截图使用 `1800×1800` 视口。内容只来自虚构资料和合成反馈，不含真实问题、回答或制度正文。可在[媒体清单](assets/manifest.json)中核对文件哈希、尺寸和审核状态。
 
 ![无 Key 演示模式](assets/runtime-mode.png)
 
@@ -37,6 +37,8 @@ indexed_documents=8 answered_questions=2 refused_questions=1 network_calls=0
 ![历史会话恢复](assets/chat-history.png)
 
 ![资料管理](assets/documents.png)
+
+![反馈审核与数据飞轮](assets/feedback-review.png)
 
 ![问题流转短 GIF](assets/question-flow.gif)
 
@@ -79,6 +81,8 @@ Demo Provider 只把这条登记追问映射到独立问题“新员工岗前培
 ### 2:15–2:45：展示资料和历史
 
 打开“资料管理”，确认列表只有四个虚构资料的 PDF/DOCX 文件和安全状态（见[资料管理截图](assets/documents.png)）。返回历史会话，恢复刚才的对话；说明 SQLite 保存的是版本、消息、引用和反馈元数据，Qdrant Local 保存向量。
+
+如果要讲“上线后如何持续改进”，补充展示[反馈审核与数据飞轮截图](assets/feedback-review.png)：案例先经过脱敏投影、分级去重、人工 Rubric 和证据 Trace，审核通过后才可以按目标集、候选版本和 `dev/holdout` 分层追加到 `golden-v2` 候选历史；它不会直接修改当前黄金集，也不会自动冻结。该图为合成 fixture，默认无 Key Demo 不读取真实反馈。
 
 ### 2:45–3:00：用架构收尾
 

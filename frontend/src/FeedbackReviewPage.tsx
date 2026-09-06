@@ -5,6 +5,7 @@ import {
   getFeedbackCase,
   getFeedbackReviewSummary,
   listFeedbackCases,
+  promoteFeedbackCase,
   saveFeedbackReview,
 } from "./api/client";
 import type {
@@ -14,6 +15,7 @@ import type {
   FeedbackReviewInput,
   FeedbackReviewStatus,
   FeedbackTriagePriority,
+  FeedbackPromotionInput,
 } from "./api/types";
 
 const EMPTY_INPUT: FeedbackReviewInput = {
@@ -26,6 +28,13 @@ const EMPTY_INPUT: FeedbackReviewInput = {
   review_version: "task17b-v1",
 };
 
+const DEFAULT_PROMOTION_INPUT: FeedbackPromotionInput = {
+  target_set_id: "2026-standard-manual-v1-golden-v2",
+  target_version: "candidate-001",
+  target_split: "dev",
+  manifest_id: "manifest-synthetic-001",
+};
+
 export default function FeedbackReviewPage() {
   const [summary, setSummary] = useState<Record<string, number>>({});
   const [cases, setCases] = useState<FeedbackCaseSummary[]>([]);
@@ -35,9 +44,11 @@ export default function FeedbackReviewPage() {
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [promoting, setPromoting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [reviewInput, setReviewInput] = useState<FeedbackReviewInput>(EMPTY_INPUT);
+  const [promotionInput, setPromotionInput] = useState<FeedbackPromotionInput>(DEFAULT_PROMOTION_INPUT);
 
   useEffect(() => {
     let cancelled = false;
@@ -118,6 +129,29 @@ export default function FeedbackReviewPage() {
     }
   };
 
+  const submitPromotion = async () => {
+    if (!selectedId || !detail || promoting || detail.promotion.status !== "golden_v2_candidate") return;
+    setPromoting(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await promoteFeedbackCase(selectedId, promotionInput);
+      setNotice("已加入 golden-v2 候选集");
+      setDetail((current) => current ? {
+        ...current,
+        case: { ...current.case, promotion_status: "golden_v2_candidate" },
+        promotion: result.promotion,
+        promotions: [...current.promotions, result.record],
+      } : current);
+    } catch (errorValue) {
+      setError(errorValue instanceof ApiError && errorValue.code === "FEEDBACK_PROMOTION_FAILED"
+        ? "加入候选集失败，当前案例未改变。"
+        : "候选集服务暂时不可用。");
+    } finally {
+      setPromoting(false);
+    }
+  };
+
   return (
     <section className="page feedback-review-page" aria-labelledby="feedback-review-title">
       <header className="page-header">
@@ -133,6 +167,21 @@ export default function FeedbackReviewPage() {
           <span>golden-v2 候选：{summary.promotion_golden_v2_candidate ?? 0}</span>
         </div>
       </header>
+
+      <div className="data-flywheel" aria-label="数据飞轮流程">
+        <strong>数据飞轮</strong>
+        <span className="flywheel-step done">① 用户反馈</span>
+        <span className="flywheel-arrow">→</span>
+        <span className="flywheel-step done">② 脱敏投影</span>
+        <span className="flywheel-arrow">→</span>
+        <span className="flywheel-step done">③ 分级去重</span>
+        <span className="flywheel-arrow">→</span>
+        <span className="flywheel-step done">④ 人工审核</span>
+        <span className="flywheel-arrow">→</span>
+        <span className="flywheel-step active">⑤ golden-v2 候选</span>
+        <span className="flywheel-arrow">→</span>
+        <span className="flywheel-step">⑥ 复评 / 冻结</span>
+      </div>
 
       {error && <div className="page-error" role="alert">{error}</div>}
       {notice && <div className="status-line status-success" role="status" aria-live="polite">{notice}</div>}
@@ -221,8 +270,32 @@ export default function FeedbackReviewPage() {
           <RubricSelect label="医疗安全合格" value={reviewInput.safety_ok} onChange={(value) => setReviewInput({ ...reviewInput, safety_ok: value })} />
           <button type="button" className="primary-button" disabled={!detail || saving} onClick={() => void submitReview()}>{saving ? "保存中…" : "保存并处理下一条"}</button>
           <div className="promotion-check"><strong>晋级检查</strong><p>{detail?.promotion.reasons.join("、") ?? "请选择案例"}</p><span>{detail?.promotion.status === "golden_v2_candidate" ? "当前为候选" : "尚未晋级"}</span></div>
+          <section className="promotion-form" aria-label="测试集增量">
+            <h3>有序增加测试集</h3>
+            <p className="promotion-help">只有审核门通过后才能追加候选；不会直接修改当前黄金集或自动冻结。</p>
+            <label>目标测试集
+              <input aria-label="目标测试集" value={promotionInput.target_set_id} onChange={(event) => setPromotionInput({ ...promotionInput, target_set_id: event.target.value })} />
+            </label>
+            <label>候选版本
+              <input aria-label="候选版本" value={promotionInput.target_version} onChange={(event) => setPromotionInput({ ...promotionInput, target_version: event.target.value })} />
+            </label>
+            <label>数据分层
+              <select aria-label="数据分层" value={promotionInput.target_split} onChange={(event) => setPromotionInput({ ...promotionInput, target_split: event.target.value as FeedbackPromotionInput["target_split"] })}>
+                <option value="dev">dev（调优集）</option>
+                <option value="holdout">holdout（留出集）</option>
+              </select>
+            </label>
+            <label>Manifest ID
+              <input aria-label="Manifest ID" value={promotionInput.manifest_id} onChange={(event) => setPromotionInput({ ...promotionInput, manifest_id: event.target.value })} />
+            </label>
+            <button type="button" className="primary-button" disabled={!detail || detail.promotion.status !== "golden_v2_candidate" || promoting} onClick={() => void submitPromotion()}>
+              {promoting ? "加入中…" : "加入 golden-v2 候选集"}
+            </button>
+          </section>
           <h3>审核历史</h3>
           <ol className="review-history">{detail?.reviews.map((review) => <li key={review.review_id}>{review.reviewed_at} · {review.reviewer_role} · {review.decision}</li>) ?? <li>暂无审核记录</li>}</ol>
+          <h3>测试集增量历史</h3>
+          <ol className="review-history">{detail?.promotions.map((promotion) => <li key={promotion.promotion_id}>{promotion.target_set_id ?? "目标集未知"} · {promotion.target_version ?? "版本未知"} · {promotion.target_split}</li>) ?? <li>尚未追加候选</li>}</ol>
         </section>
       </div>
     </section>

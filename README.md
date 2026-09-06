@@ -63,12 +63,15 @@
 
 ![问题流转短 GIF](docs/assets/question-flow.gif)
 
+![反馈审核与数据飞轮](docs/assets/feedback-review.png)
+
 运行 Demo 后可以看到：
 
 - 左侧“制度问答”和“资料管理”导航，以及持续显示的“无 Key 演示模式”标识；
 - 问答页的检索、重排、生成、引用核验状态；
 - 正式答案、可展开引用、证据不足拒答、历史会话恢复和反馈按钮；
 - 资料管理页返回安全的文件名、版本状态和失败原因，不返回本机路径或原文数据库。
+- 管理员反馈审核页的“数据飞轮”：脱敏投影、分级去重、人工 Rubric、证据 Trace，以及追加到 `golden-v2` 的 dev/holdout 候选集。截图中的案例和证据均为合成数据。
 
 ## 快速体验
 
@@ -188,6 +191,7 @@ Cloud 也只绑定本机地址；分别在两个终端使用 `Ctrl+C` 停止。�
 - 结构化 `refused`/`answer` 答案合同，答案先完整缓冲，引用集合通过后才显示；
 - 缺证据、模型拒答、Provider 不可用、答案不可核验等固定 reason code；
 - 连续会话、追问改写、历史恢复、正式答案与未核验通用参考分栏；
+- 本地管理员反馈审核工作台：脱敏案例队列、证据/Trace 核验、Rubric 审核、追加式 `golden-v2` 候选记录和数据飞轮可视化；不会自动冻结当前黄金集；
 - Task15 的 Docling/Legacy 隔离 staging、可定位切片 manifest 与混合检索实验记录；
 - 2A 开发验收用的受控 AgentWorkflow 合同、Router、预算 transport、baseline fallback 和零出网预检；默认产品请求仍走单一 RAG 编排，未将实验自动升级为正式能力；
 - 确定性 Demo Provider：本地 1024 维向量、词法重排、登记场景匹配和安全拒答；
@@ -205,6 +209,8 @@ PDF/DOCX
 问题 ─► 清理 ─► 向量召回(≤20) ─► 去重 ─► Reranker(≤6)
      ─► 相关性门(0.35) ─► Demo 模型或 DeepSeek
      ─► 结构化答案/引用核验 ─► SSE ─► React 页面与 SQLite 会话
+                                      │
+                                      └─► 脱敏反馈 → 人工审核 → golden-v2 候选（不自动冻结）
 ```
 
 模块职责、事件边界和存储关系见 [系统架构说明](docs/architecture.md)。公开导出、演示和文档职责见 [Demo 指南](docs/demo-guide.md) 与 [项目案例](docs/project-case-study.md)。
@@ -230,6 +236,7 @@ PDF/DOCX
 - **检索层（Task14/18）：** 生产仍是 Vector → 去重 → Reranker；staging 另做 Vector + lexical + balanced RRF（`k=60`）对照。最终 R1 的 Recall@20 `0.607→0.679`，但回答可用率 `72.5%→68.75%`、引用有效率 `77.5%→76.25%`、时延约 `2.00→2.28s`，因此只保留为实验，不自动切换。
 - **评测层（Task16/18/19）：** 当前黄金集固定为 `final-ai-validated-20260904-005`，80 题（64 可回答 + 16 无答案）；Task18/19 的结果都绑定题集与知识版本。最新正式运行库复评为 57/80 形成回答、16/16 无答案拒答；这些是工程代理指标，不等于医学准确率。
 - **Agent 层（2A）：** `backend/app/agents` 实现严格 Router、预接线工作流变体、预算/超时、失败分类和 baseline fallback；历史 A/C 对照暴露了 Router 合同适配问题并已记录。它是默认关闭的开发实验，不是面向用户的运行时多 Agent。
+- **反馈闭环（Task17A/17B）：** 用户反馈先进入本地脱敏投影，再经过去重、证据和 Rubric 门；管理员可以把通过审核的案例按目标集、候选版本和 `dev/holdout` 分层追加到 `golden-v2` 候选历史，后续再统一复评/冻结。它是有序数据飞轮，不会把一次反馈直接改写生产或当前黄金集。
 
 完整版本—结果—决策映射见 [评测与回滚](docs/evaluation.md)、[系统架构](docs/architecture.md)、[多 Agent 开发](docs/multi-agent-development.md) 和 [发布证据](docs/release-evidence.md)。
 

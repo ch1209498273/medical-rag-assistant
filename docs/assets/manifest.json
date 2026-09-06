@@ -48,6 +48,14 @@
       "width": 1440,
       "height": 900,
       "reviewed": true
+    },
+    {
+      "file": "feedback-review.png",
+      "scenario_id": "synthetic-feedback-data-flywheel",
+      "sha256": "98efb885d6bfe1fc62185c051465ec4acc55b20b3e1276dd200b52593c183ad5",
+      "width": 1800,
+      "height": 1800,
+      "reviewed": true
     }
   ]
 }

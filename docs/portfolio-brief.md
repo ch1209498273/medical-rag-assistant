@@ -34,7 +34,7 @@
 | 业务抽象与范围控制 | 先服务医护制度/培训问答；患者端、登录 ACL 和公网部署留到 v2 | [项目案例](project-case-study.md) |
 | 知识工程 | PDF/DOCX 解析、Chunk、页码/段落定位、版本状态和 active 过滤 | [系统架构](architecture.md) |
 | RAG 质量判断 | 把召回、重排、答案合同、引用核验和拒答分开测；不以回答数量单独晋级 | [评测与回滚](evaluation.md) |
-| 工程交付 | FastAPI、React、SQLite、Qdrant Local、SSE、会话历史、反馈审核和无网络 Demo | [Demo 指南](demo-guide.md) |
+| 工程交付 | FastAPI、React、SQLite、Qdrant Local、SSE、会话历史、反馈审核、数据飞轮和无网络 Demo | [Demo 指南](demo-guide.md) |
 | Agent/Workflow 工程 | 严格路由合同、预算 transport、显式 fallback 和 2A 对照；默认产品仍不启用运行时多 Agent | [多 Agent 开发](multi-agent-development.md) |
 | 研发治理 | 任务边界、基线、测试、安全复核和文档交接；开发多 Agent 不等于运行时多 Agent | [多 Agent 开发](multi-agent-development.md) |
 
@@ -52,7 +52,7 @@
 
 ### 案例三：把一次性 Demo 变成可持续改进闭环
 
-资料版本、评测集版本、反馈脱敏、管理员审核和晋级条件分别有边界。用户反馈不会直接改 Prompt，也不会自动进入黄金集；它先形成可审核的 Bad Case，再由人工决定是否进入修复和回归。
+资料版本、评测集版本、反馈脱敏、管理员审核和晋级条件分别有边界。用户反馈不会直接改 Prompt，也不会自动进入当前黄金集；它先形成可审核的 Bad Case，再由人工决定是否按 `dev/holdout` 分层追加到 `golden-v2` 候选，最后统一复评和冻结。界面证据见[反馈审核与数据飞轮截图](assets/feedback-review.png)。
 
 ## 最近一轮真正落地的工程变化
 

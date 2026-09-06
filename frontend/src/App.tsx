@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import ChatPage from "./ChatPage";
 import AdminWorkspace from "./AdminWorkspace";
+import type { AdminTab } from "./AdminWorkspace";
 import { getHealth } from "./api/client";
 import type { RuntimeMode } from "./api/types";
 
@@ -16,7 +17,13 @@ function runtimeModeLabel(runtimeMode: RuntimeMode | null): string {
 }
 
 export default function App() {
-  const [page, setPage] = useState<Page>("chat");
+  const initialPage = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("page") === "documents"
+    ? "documents"
+    : "chat";
+  const initialAdminTab: AdminTab = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("tab") === "feedback"
+    ? "feedback"
+    : "documents";
+  const [page, setPage] = useState<Page>(initialPage);
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode | null>(null);
 
   useEffect(() => {
@@ -72,7 +79,7 @@ export default function App() {
           <span className="brand-name">{APP_NAME}</span>
           <span className="runtime-badge" role="status" aria-live="polite">{modeLabel}</span>
         </header>
-        {page === "chat" ? <ChatPage /> : <AdminWorkspace />}
+        {page === "chat" ? <ChatPage /> : <AdminWorkspace initialTab={initialAdminTab} />}
       </main>
     </div>
   );

@@ -126,6 +126,27 @@ def test_p0_review_without_clinical_reviewer_cannot_promote(tmp_path):
     assert "review_missing" in response.json()["reasons"]
 
 
+def test_promotion_endpoint_keeps_review_gate_closed(tmp_path):
+    client = _client(tmp_path)
+    try:
+        with client:
+            response = client.post(
+                "/api/admin/feedback/cases/fc_safe/promote",
+                json={
+                    "target_set_id": "2026-standard-manual-v1-golden-v2",
+                    "target_version": "candidate-001",
+                    "target_split": "dev",
+                    "manifest_id": "manifest-synthetic-001",
+                },
+            )
+    finally:
+        _close_client(client)
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "FEEDBACK_PROMOTION_BLOCKED"
+    assert "review_missing" in response.json()["detail"]["promotion"]["reasons"]
+
+
 def test_disabled_admin_feedback_returns_fixed_error_code(tmp_path):
     client = _client(tmp_path, enabled=False)
     try:
@@ -161,5 +182,46 @@ def test_review_submission_appends_history_and_updates_only_private_status(tmp_p
             assert detail.status_code == 200
             assert len(detail.json()["reviews"]) == 1
             assert detail.json()["case"]["review_status"] == "approved"
+    finally:
+        _close_client(client)
+
+
+def test_explicit_promotion_appends_candidate_record_after_review_gates(tmp_path):
+    client = _client(tmp_path)
+    try:
+        with client:
+            review = client.post(
+                "/api/admin/feedback/cases/fc_safe/reviews",
+                json={
+                    "reviewer_role": "clinical_reviewer",
+                    "decision": "approve",
+                    "evidence_ok": True,
+                    "points_ok": True,
+                    "safety_ok": True,
+                    "note_code": "confirmed",
+                    "review_version": "task17b-v1",
+                },
+            )
+            assert review.status_code == 200
+
+            response = client.post(
+                "/api/admin/feedback/cases/fc_safe/promote",
+                json={
+                    "target_set_id": "2026-standard-manual-v1-golden-v2",
+                    "target_version": "candidate-001",
+                    "target_split": "dev",
+                    "manifest_id": "manifest-synthetic-001",
+                },
+            )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["promotion"]["status"] == "golden_v2_candidate"
+            assert body["record"]["target_split"] == "dev"
+            assert body["record"]["target_set_id"] == "2026-standard-manual-v1-golden-v2"
+
+            detail = client.get("/api/admin/feedback/cases/fc_safe")
+            assert detail.status_code == 200
+            assert detail.json()["case"]["promotion_status"] == "golden_v2_candidate"
+            assert len(detail.json()["promotions"]) == 1
     finally:
         _close_client(client)

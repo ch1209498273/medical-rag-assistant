@@ -237,6 +237,13 @@ export type FeedbackPromotion = {
   promoted_at: string;
 };
 
+export type FeedbackPromotionInput = {
+  target_set_id: string;
+  target_version: string;
+  target_split: "dev" | "holdout";
+  manifest_id: string;
+};
+
 export type FeedbackCaseDetail = {
   case_id: string;
   question: string | null;

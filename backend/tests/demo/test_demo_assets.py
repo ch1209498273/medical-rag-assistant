@@ -48,6 +48,7 @@ VISUAL_SCENARIOS = {
     "documents.png": "document-list",
     "runtime-mode.png": "runtime-mode-demo",
     "question-flow.gif": "question-flow",
+    "feedback-review.png": "synthetic-feedback-data-flywheel",
 }
 
 
@@ -104,7 +105,8 @@ def test_public_visual_manifest_matches_reviewed_metadata_free_assets():
         assert hashlib.sha256(raw).hexdigest() == entry["sha256"]
         width, height = _read_image_dimensions(asset, raw)
         assert (width, height) == (entry["width"], entry["height"])
-        assert (width, height) == (1440, 900)
+        expected_dimensions = (1800, 1800) if file_name == "feedback-review.png" else (1440, 900)
+        assert (width, height) == expected_dimensions
         assert not _contains_metadata(raw, asset.suffix.lower())
         assert not any(
             marker in raw.lower()

@@ -9,6 +9,7 @@ import type {
   FeedbackEvidenceReference,
   FeedbackEventView,
   FeedbackPromotion,
+  FeedbackPromotionInput,
   FeedbackReviewInput,
   FeedbackReviewSummary,
   FeedbackReviewView,
@@ -398,6 +399,39 @@ export async function getFeedbackPromotionCheck(caseId: string): Promise<Promoti
     return normalizePromotionCheck(payload);
   } catch {
     throw new ApiError(200, "FEEDBACK_REVIEW_UNAVAILABLE");
+  }
+}
+
+export async function promoteFeedbackCase(
+  caseId: string,
+  input: FeedbackPromotionInput,
+): Promise<{ promotion: PromotionCheck; record: FeedbackPromotion }> {
+  if (
+    !isSafeId(caseId) ||
+    !isSafeId(input.target_set_id) ||
+    !isSafeId(input.target_version) ||
+    !isSafeId(input.manifest_id) ||
+    !isOneOf(input.target_split, ["dev", "holdout"])
+  ) {
+    throw new ApiError(400, "FEEDBACK_PROMOTION_INVALID");
+  }
+  const payload = await requestJson(
+    `/api/admin/feedback/cases/${encodeURIComponent(caseId)}/promote`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
+    "FEEDBACK_PROMOTION_FAILED",
+  );
+  try {
+    if (!isRecord(payload)) throw new Error("invalid promotion payload");
+    return {
+      promotion: normalizePromotionCheck(payload.promotion),
+      record: normalizeFeedbackPromotion(payload.record),
+    };
+  } catch {
+    throw new ApiError(200, "FEEDBACK_PROMOTION_FAILED");
   }
 }
 
