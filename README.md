@@ -1,22 +1,49 @@
 # 医疗知识问答助手
 
-> **证据约束的医疗知识 RAG 参考实现**：让医护培训资料的问答结果可定位、可拒答、可复现。
+> **证据约束的医疗知识 RAG 参考实现**：把“模型会回答”升级成“答案有证据、失败可解释、质量可测量”。
 
 > Medical Knowledge Q&A Assistant — a local-first, evidence-grounded RAG portfolio project.
 
-**当前公开状态：** v1 公开副本已同步到 GitHub `main`，并用 `git ls-remote` 核验远程提交与本地发布提交一致。详见[发布证据与远程发布门](docs/release-evidence.md)。
+[![CI](https://github.com/ch1209498273/medical-rag-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/ch1209498273/medical-rag-assistant/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827)
+![RAG](https://img.shields.io/badge/RAG-evidence--grounded-0F766E)
+![Privacy](https://img.shields.io/badge/data-public%20demo%20only-7C3AED)
+
+**当前公开状态：** v1 公开副本采用“公开 Demo + 私有真实评测”双轨；公开仓库可直接运行无 Key Demo，真实资料、题集和云端原始响应留在本地私有环境。发布门、CI 和公开边界见[发布证据与远程发布门](docs/release-evidence.md)。
 
 > **边界提醒：** 这是一个面向本机演示和工程学习的作品集项目。公开 Demo 使用完全虚构的资料，不代表真实医疗制度、医保规则或诊疗建议；它不是公网服务，也不替代专业人员判断。
 
 ## 30秒了解项目
 
-一个可扩展的医疗知识问答助手。当前 v1.0 聚焦血透机构医护人员的制度与专业知识检索，采用可追溯引用、证据不足拒答和本地知识库存储；患者端和运行时多 Agent 属于 v2.0 路线。
+我把“医护需要快速核对制度和培训资料”收敛成一个本机优先的医疗 AI 工程 PoC：
+
+| 业务问题 | 我的工程回答 |
+| --- | --- |
+| 模型可能脱离内部资料自由发挥 | 版本化知识库 + active/approved 过滤 + 证据门 |
+| 引用看似存在但无法追溯 | `SourceRef` 保留页码/段落/表格定位，引用集合统一校验 |
+| 回答越多，越可能把无答案题答错 | 固定拒答状态、黄金评测集、安全门和可回滚实验 |
+| 需要展示 Agent，但不能把 Demo 夸成生产多 Agent | Router、预算、超时、fallback 和零出网预检独立成候选工作流 |
+
+这不是“接一个大模型做聊天框”，而是一条可验证链路：**知识版本 → 混合检索 → 结构化回答 → 引用核验 → 反馈闭环 → 发布边界**。
+
+### 能力证据卡
+
+- **产品判断：** 先做医护制度/培训问答，患者端、登录 ACL 和公网部署留到 v2。
+- **知识工程：** 8 册标准手册在私有环境完成 Docling 主切分、Legacy fallback、定位修复和运行库迁移验收。
+- **RAG 质量：** 固定 80 题工程黄金集，分别测 Recall、MRR、引用、拒答和 grounded proxy，不用单一回答率包装效果。
+- **Agent 治理：** 开发期协作角色与产品运行时明确分开；候选 AgentWorkflow 仅保留预算、超时、失败分类和 baseline fallback 的可测实验。
+- **工程交付：** FastAPI + React + SQLite + Qdrant Local + SSE，Demo 无 Key、无网络、可复现。
+
+### 项目一句话
+
+一个可扩展的医疗知识问答助手。当前 v1.0 聚焦血透机构医护人员的制度与专业知识检索，采用可追溯引用、证据不足拒答和本地知识库存储；患者端和面向用户的运行时多 Agent 属于 v2.0 路线。
 
 它把 PDF/DOCX 资料变成可定位的 Chunk，经过 Embedding、向量召回、Reranker 和相关性门后，再生成带引用的结构化答案。系统同时提供一个无需 Key、无需网络的确定性 Demo，以及由运行者自备 Key 的显式 Cloud 模式。
 
 30 秒了解项目：它展示的不是“让模型随便回答”，而是如何把资料版本、检索、证据引用、安全拒答、评测回滚和公开数据边界放在同一条可验证工程链路里。
 
-想快速按“求职能力证据”阅读，请先看[作品集导览](docs/portfolio-brief.md)；它把业务判断、知识工程、RAG 评测、工程交付和研发治理映射到可追问的代码与文档。
+想快速按“求职能力证据”阅读，请先看[作品集导览](docs/portfolio-brief.md)；想看一次完整的产品取舍，阅读[项目案例](docs/project-case-study.md)；想现场运行，直接看[Demo 指南](docs/demo-guide.md)。
 
 技术栈：Python 3.12、FastAPI、Pydantic Settings、SQLite、Qdrant Local、PyMuPDF、python-docx、React 19、TypeScript、Vite、Vitest、DeepSeek 和 SiliconFlow。
 
@@ -199,12 +226,12 @@ PDF/DOCX
 项目近期不是只“换了一个模型”，而是沿着知识、检索、回答和 Agent 四层逐步做了可回滚的实验：
 
 - **知识层（Task15）：** 8 册 `2026-standard-manual-v1` 在隔离 staging 中使用 Docling `HybridChunker` 主候选、Legacy fallback；定位修复后保留 1,114 个 chunk identity，1,114/1,114 可定位（段落 146、表格 968）。真实手册和切片正文不进入公开仓库。
-- **知识生命周期：** 源项目已将旧索引与旧 staging 运行包移入本地可恢复归档，最新标准手册 staging 作为唯一最新知识资产保留；staging 到正式运行库仍需独立迁移、回归和验收，公开 Demo 不宣称已上线真实手册。
+- **知识生命周期：** 源项目将旧索引与旧 staging 运行包先移入可恢复归档，再把最新标准手册迁移到独立正式运行库并完成本地验收；公开 Demo 仍只使用虚构资料，不把私有运行库包装成公网服务。
 - **检索层（Task14/18）：** 生产仍是 Vector → 去重 → Reranker；staging 另做 Vector + lexical + balanced RRF（`k=60`）对照。最终 R1 的 Recall@20 `0.607→0.679`，但回答可用率 `72.5%→68.75%`、引用有效率 `77.5%→76.25%`、时延约 `2.00→2.28s`，因此只保留为实验，不自动切换。
-- **评测层（Task16/18）：** 当前黄金集固定为 `final-ai-validated-20260904-005`，80 题（64 可回答 + 16 无答案）；Task18 的 vector、hybrid、D1/F/H 结果都绑定该题集与 `RUN-20260904-004`。早期 30 题仍保留作历史回滚证据。
+- **评测层（Task16/18/19）：** 当前黄金集固定为 `final-ai-validated-20260904-005`，80 题（64 可回答 + 16 无答案）；Task18/19 的结果都绑定题集与知识版本。最新正式运行库复评为 57/80 形成回答、16/16 无答案拒答；这些是工程代理指标，不等于医学准确率。
 - **Agent 层（2A）：** `backend/app/agents` 实现严格 Router、预接线工作流变体、预算/超时、失败分类和 baseline fallback；历史 A/C 对照暴露了 Router 合同适配问题并已记录。它是默认关闭的开发实验，不是面向用户的运行时多 Agent。
 
-完整版本—结果—决策映射见 [评测与回滚](docs/evaluation.md)、[系统架构](docs/architecture.md) 和 [多 Agent 开发](docs/multi-agent-development.md)。
+完整版本—结果—决策映射见 [评测与回滚](docs/evaluation.md)、[系统架构](docs/architecture.md)、[多 Agent 开发](docs/multi-agent-development.md) 和 [发布证据](docs/release-evidence.md)。
 
 ## 评测与回滚
 
@@ -220,6 +247,18 @@ PDF/DOCX
 C2 说明提示词实验的取舍：它减少了可回答问题的过度拒答，却让资料中没有答案的问题更容易被回答，安全边界退化。因此当前正式提示词恢复为 C1；C2 报告仅用于工程复盘，不构成医疗有效性、监管认证或生产可用性证明。更完整的方法和限制见 [评测说明](docs/evaluation.md)。
 
 当前 80 题评测集为 `2026-standard-manual-v1-golden-v1`（64 道可回答 + 16 道无答案），具体运行版本为 `final-ai-validated-20260904-005`；该题集已完成专业审核冻结，Task18 的当前流程评测使用它。它不能与上面的历史 30 题数字直接比较；冻结也不等于临床认证。
+
+### 当前 80 题工程基线（私有真实评测的公开聚合）
+
+| 观察项 | 结果 | 如何解释 |
+| --- | ---: | --- |
+| 可回答题形成回答 | 57/64（89.06%） | 生成链路的工程可用性，不是医学正确率 |
+| 无答案题安全拒答 | 16/16（100%） | 负例安全门通过，不代表开放域安全 |
+| Recall@20 / Recall@6 | 0.607 / 0.595 | 固定题集与知识版本下的检索代理 |
+| MRR@20 / nDCG@6 | 0.580 / 0.673 | 来源排序与前 6 条证据质量代理 |
+| 运行时引用可见 | 57/57（100%） | 只能说明引用可展示和可定位 |
+
+这张表刻意只展示聚合结果；真实题目、答案、资料、数据库和 Provider 原始响应不进入公开仓库。完整口径、限制和回滚逻辑见[评测与回滚](docs/evaluation.md)。
 
 ## 工程质量
 

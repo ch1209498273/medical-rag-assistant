@@ -30,7 +30,7 @@
 8. 为每个任务先写失败测试，再实现最小行为；复核后继续补齐 Provider 消息边界、runtime 资源关闭、Demo 资料来源边界和启动器 PID 归属。
 9. 在 v1.1 Task 5 固定指标字典：每个比例同时写分子、分母、Wilson 95% 置信区间和限制；再用虚构资料的零网络 Demo 验收治理链路，避免把一次私有云端观测写成真实业务成效。
 10. 在 v2.0 2A 先建立 A/B/C 同协议对照合同、调用预算和零出网预检，再决定是否为候选工作流申请一次性云端评测授权；默认正式链路不变。
-11. 在 Task15 把最新 8 册手册重建为隔离的 `2026-standard-manual-v1` staging：Docling `HybridChunker` 主候选、Legacy fallback、段落/表格定位和可回滚的切片 manifest；第 9 册留作增量版本。
+11. 在 Task15 把最新 8 册手册重建为隔离的 `2026-standard-manual-v1` staging：Docling `HybridChunker` 主候选、Legacy fallback、段落/表格定位和可回滚的切片 manifest；随后在 Task19 转成正式运行库候选并完成本地验收；第 9 册留作增量版本。
 12. 在 Task16 将候选题经过结构校验、无答案全库核验和专业审核，冻结为 `final-ai-validated-20260904-005`（80 题：64 可回答 + 16 无答案）；在 Task18 中固定题集与 `RUN-20260904-004` 做 vector 基线和 hybrid 对照，避免“题集变了却继续沿用旧成绩”。
 13. 在 2A 中把 Agent 变成可验证的工程合同：Router 只分类，预算 transport 记录物理调用，工作流使用预接线变体和 baseline fallback；历史 30 题暴露的合同适配问题被记录和修复，但默认用户请求仍走单一 RAG。
 
@@ -43,6 +43,8 @@ Demo 的安全聚合输出为 `indexed_documents=8 answered_questions=2 refused_
 后续 9F-B 在不同的私有协议下又观察到正式答案 20/30、无答案拒答 5/5；它补充了失败分类线索，但不能与 C1/C2 直接排名，更不能把 5/5 写成零风险。系统展示引用，只说明引用可定位；可见引用不等于答案正确。面试时我会明确说明：技术 `active` 代表索引可检索，尚不代表资料已经在业务上生效。
 
 这里的 30 题是早期 `corrected V1/V2` 历史协议。当前 8 册 `2026-standard-manual-v1` 已形成并专业审核冻结独立的 `2026-standard-manual-v1-golden-v1` 评测集：80 题（64 道可回答、16 道无答案），Task18 的当前流程评测固定使用该题集。它是当前工程黄金基线，但不等于临床认证；因此我会在面试中明确区分“历史方案回滚证据”和“当前 80 题冻结基线”，不把两者的比例直接横向比较。
+
+Task19 又把同一题集带到已激活的正式运行库上做了独立复评：64 道可回答题中 57 道形成回答，16 道无答案题全部拒答；Recall@20=0.607、Recall@6=0.595、MRR@20=0.580。这个结果证明迁移后的检索输入与既有知识快照一致，但不证明迁移本身造成质量提升，也不替代临床 UAT。
 
 Task 5 的本机验收输出为 `indexed_documents=8 answered_questions=2 refused_questions=1 network_calls=0`，后端 909 passed/10 skipped、前端 38 passed、生产构建通过。这个结果证明索引、业务资格、引用、拒答、追问、历史和通用参考分栏在虚构数据上连通；它不代表真实医护采纳、临床改善、ROI 或开放域模型能力。
 
@@ -72,8 +74,8 @@ Task 5 的本机验收输出为 `indexed_documents=8 answered_questions=2 refuse
 | 层次 | 固定输入 | 观察到的结果 | 当前决定 |
 |---|---|---|---|
 | 题集 | `final-ai-validated-20260904-005`，80 题 | 专业审核冻结，64/16 分层 | 作为 Task18 后续评测唯一当前基准 |
-| 知识与切分 | `RUN-20260904-004`，1,114 个 Docling staging chunks | 定位 1,114/1,114；段落 146、表格 968 | 保留为隔离 staging，不覆盖生产库 |
-| Vector 基线 | `baseline_v1 + vector + c1` | Recall@20 0.607；回答可用 53/80（Task18-G） | 当前默认，继续观察生成稳定性 |
+| 知识与切分 | `RUN-20260904-004`，1,114 个 Docling chunks | 定位 1,114/1,114；段落 146、表格 968；已迁移并验收正式运行库候选 | 公开 Demo 仍不携带真实资料 |
+| Vector 基线 | `baseline_v1 + vector + c1` | Recall@20 0.607；正式运行库复评形成回答 57/64 | 当前默认，继续观察生成稳定性 |
 | Hybrid 对照 | Vector + lexical + balanced RRF | Recall@20 0.679，但回答可用 55/80、引用有效率 76.25%、时延约 2.28s | 仅保留实验，不自动切换 |
 | Agent 2A | 历史 30 题；A/C 同协议 | A 21/30，C 9/30；曾有 Router 合同失败 | 保留可复核实现和 fallback，默认关闭运行时 Agent |
 
