@@ -3,59 +3,76 @@
   "assets": [
     {
       "file": "chat-answer.png",
-      "scenario_id": "fact-training-hours",
-      "sha256": "4d5f87baaba21ebdf47acc729852cc78fd78eb474510eab53f5ac8ae482ccc38",
+      "scenario_id": "phase2-user-answer-evidence",
+      "sha256": "36a3df95265bec60616e11161c4454c7b1adff96f0ca9cd3c70e51fde1879cd3",
       "width": 1440,
       "height": 900,
       "reviewed": true
     },
     {
       "file": "chat-refusal.png",
-      "scenario_id": "no-answer-reimbursement",
-      "sha256": "e5b07c7ec4ca27ea862d7753a0be29380c9c17f578ab2f1ffe9d5fa729a91bf2",
+      "scenario_id": "phase2-insufficient-evidence-next-action",
+      "sha256": "869f4cbda0a981f86fc91959767a86c0451baba7c24e62cefac2d2f236da7561",
       "width": 1440,
       "height": 900,
       "reviewed": true
     },
     {
       "file": "chat-history.png",
-      "scenario_id": "followup-history-restore",
-      "sha256": "4f784c4b7b530c0d0b5ebecffae2c3c0d95f057181b780bfada68d632afbf964",
+      "scenario_id": "phase2-session-history-audit",
+      "sha256": "02b9a969a12bf051b5c590e79a1e66822f5e007fd3603818b1635cb84ceee06e",
       "width": 1440,
       "height": 900,
       "reviewed": true
     },
     {
       "file": "documents.png",
-      "scenario_id": "document-list",
-      "sha256": "92bd5f02bd40a4726c72baf0d2063b7b1285f02dd24cca40bd294651018dc5c3",
+      "scenario_id": "phase2-document-lifecycle-metadata",
+      "sha256": "5474f25d65b7a9dd8b250b131965267afeeaff938d398a2bd01458b7615bf63e",
+      "width": 1440,
+      "height": 900,
+      "reviewed": true
+    },
+    {
+      "file": "prompt-management.png",
+      "scenario_id": "phase2-prompt-management-dialog",
+      "sha256": "68c2cf38822f593efa60c8ac8c1b3cbf1ca1c970c7c2bac819f35165647df112",
       "width": 1440,
       "height": 900,
       "reviewed": true
     },
     {
       "file": "runtime-mode.png",
-      "scenario_id": "runtime-mode-demo",
-      "sha256": "3694a5e7e915d3fee7704da8b4368948569ec207a54a6944b59d90ef98ac7f5a",
+      "scenario_id": "phase2-account-role-directory",
+      "sha256": "c46e3e5d942c4ad42362d2f506aac07f4e387688b905163a53236287d52e29ca",
+      "width": 1440,
+      "height": 900,
+      "reviewed": true
+    },
+    {
+      "file": "evaluation-dashboard.png",
+      "scenario_id": "phase2-evaluation-governance-dashboard",
+      "sha256": "ffbc7ec388ca6e9f97b5a6e699dac724bf05ff5555d093330179f5f12b256703",
       "width": 1440,
       "height": 900,
       "reviewed": true
     },
     {
       "file": "question-flow.gif",
-      "scenario_id": "question-flow",
-      "sha256": "28d433c4698d396e10c8a09e461aa52878e451108a222a58d97ad739d63667e7",
+      "scenario_id": "phase2-question-workflow",
+      "sha256": "5a6c0ed8ae0f1323a4a217406518f6c4ea62a5d307b2c8cc0f3bb8a353bcc9d4",
       "width": 1440,
       "height": 900,
       "reviewed": true
     },
     {
       "file": "feedback-review.png",
-      "scenario_id": "synthetic-feedback-data-flywheel",
-      "sha256": "98efb885d6bfe1fc62185c051465ec4acc55b20b3e1276dd200b52593c183ad5",
+      "scenario_id": "phase2-feedback-review-flywheel",
+      "sha256": "71844d64122c2ed2155a5d0085d5016b54468547af96f9b769d4f535ec4a819f",
       "width": 1800,
       "height": 1800,
       "reviewed": true
     }
   ]
 }
+

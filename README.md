@@ -51,29 +51,34 @@
 
 ## 界面预览
 
-下面的素材均来自本机 Demo 的虚构资料和固定演示流程；原图尺寸、哈希和审核状态见[媒体清单](docs/assets/manifest.json)。它们用于作品集演示，不代表生产就绪、真实医疗制度或运行时多 Agent。
+下面是二期公开展示版界面：采用二期工作台的信息架构和已交付的治理边界，展示数据全部为合成资料；原图尺寸、哈希和审核状态见[媒体清单](docs/assets/manifest.json)。公开仓库的无 Key 可运行 Demo 仍保留 v1 基线，图片用于展示二期产品体验，不代表生产就绪、真实医疗制度或运行时多 Agent。
 
-![有引用的正式答案](docs/assets/chat-answer.png)
+![二期医护问答工作台：角色、场景入口和证据核验](docs/assets/chat-answer.png)
 
-![证据不足拒答](docs/assets/chat-refusal.png)
+![资料不足时的明确回复和后续动作](docs/assets/chat-refusal.png)
 
-![历史会话恢复](docs/assets/chat-history.png)
+![历史会话、追问和审计保留](docs/assets/chat-history.png)
 
-![资料管理](docs/assets/documents.png)
+![资料生命周期、版本和业务属性弹窗](docs/assets/documents.png)
 
-![无 Key 演示模式](docs/assets/runtime-mode.png)
+![账号与权限目录](docs/assets/runtime-mode.png)
 
-![问题流转短 GIF](docs/assets/question-flow.gif)
+![问题流转：场景理解、检索、证据核验和安全拒答](docs/assets/question-flow.gif)
 
 ![反馈审核与数据飞轮](docs/assets/feedback-review.png)
 
+![Prompt 管理、中文状态和不透明编辑弹窗](docs/assets/prompt-management.png)
+
+![效果与治理看板](docs/assets/evaluation-dashboard.png)
+
 运行 Demo 后可以看到：
 
-- 左侧“制度问答”和“资料管理”导航，以及持续显示的“无 Key 演示模式”标识；
-- 问答页的检索、重排、生成、引用核验状态；
-- 正式答案、可展开引用、证据不足拒答、历史会话恢复和反馈按钮；
-- 资料管理页返回安全的文件名、版本状态和失败原因，不返回本机路径或原文数据库。
-- 管理员反馈审核页的“数据飞轮”：脱敏投影、分级去重、人工 Rubric、证据 Trace，以及追加到 `golden-v2` 的 dev/holdout 候选集。截图中的案例和证据均为合成数据。
+- 医护用户端的场景快捷入口、回答状态、引用版本和反馈入口；
+- 资料生命周期的草稿、审核、发布、版本和属性弹窗；
+- Prompt 目录的中文状态、查看详情、编辑草稿和候选边界；
+- 反馈审核页的脱敏投影、Rubric、Bad Case 审计保留和 `golden-v2` 候选流转；
+- 账号目录的四类角色、批量导入入口、状态和会话查看；
+- 效果看板的回答、拒答、引用追溯和数据可用性聚合。截图中的案例和证据均为合成数据。
 
 ### 二期交付与问题复盘
 

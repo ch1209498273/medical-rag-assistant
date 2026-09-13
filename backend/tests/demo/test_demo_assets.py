@@ -42,13 +42,15 @@ V1_DEMO_DOCUMENTS = tuple(
 DEMO_QUESTIONS = PROJECT_ROOT / "demo" / "questions.json"
 VISUAL_ASSET_DIR = PROJECT_ROOT / "docs" / "assets"
 VISUAL_SCENARIOS = {
-    "chat-answer.png": "fact-training-hours",
-    "chat-refusal.png": "no-answer-reimbursement",
-    "chat-history.png": "followup-history-restore",
-    "documents.png": "document-list",
-    "runtime-mode.png": "runtime-mode-demo",
-    "question-flow.gif": "question-flow",
-    "feedback-review.png": "synthetic-feedback-data-flywheel",
+    "chat-answer.png": "phase2-user-answer-evidence",
+    "chat-refusal.png": "phase2-insufficient-evidence-next-action",
+    "chat-history.png": "phase2-session-history-audit",
+    "documents.png": "phase2-document-lifecycle-metadata",
+    "prompt-management.png": "phase2-prompt-management-dialog",
+    "runtime-mode.png": "phase2-account-role-directory",
+    "evaluation-dashboard.png": "phase2-evaluation-governance-dashboard",
+    "question-flow.gif": "phase2-question-workflow",
+    "feedback-review.png": "phase2-feedback-review-flywheel",
 }
 
 
@@ -620,3 +622,4 @@ def _remove_reparse_path(path: Path) -> None:
         )
         return
     path.unlink(missing_ok=True)
+

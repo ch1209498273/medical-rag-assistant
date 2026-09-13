@@ -18,25 +18,29 @@
 
 ## 截图与演示入口
 
-以下图片全部来自公开 Demo 的合成资料和固定流程，截图本身不含真实制度、患者信息或 Provider 原始响应。
+以下图片是二期工作台的公开展示版界面，使用二期信息架构和合成资料；截图本身不含真实制度、患者信息或 Provider 原始响应。公开无 Key Demo 仍以 v1 基线运行，二期界面用于展示产品闭环和治理设计。
 
 ### 问答与证据
 
-![带引用的正式答案](assets/chat-answer.png)
+![二期医护问答工作台：角色、场景入口和证据核验](assets/chat-answer.png)
 
-![证据不足时的拒答](assets/chat-refusal.png)
+![资料不足时的明确回复和后续动作](assets/chat-refusal.png)
 
-![连续追问与历史会话](assets/chat-history.png)
+![历史会话、追问和审计保留](assets/chat-history.png)
 
-![问答流程](assets/question-flow.gif)
+![问题流转：场景理解、检索、证据核验和安全拒答](assets/question-flow.gif)
 
 ### 管理与反馈
 
-![资料管理](assets/documents.png)
+![资料生命周期、版本和业务属性弹窗](assets/documents.png)
 
 ![反馈审核与数据飞轮](assets/feedback-review.png)
 
-![无 Key Demo 模式](assets/runtime-mode.png)
+![账号与权限目录](assets/runtime-mode.png)
+
+![Prompt 管理、中文状态和不透明编辑弹窗](assets/prompt-management.png)
+
+![效果与治理看板](assets/evaluation-dashboard.png)
 
 推荐现场顺序：先运行[Demo 指南](demo-guide.md)，再看[系统架构](architecture.md)，最后阅读[评测与回滚](evaluation.md)和本页的问题处理记录。
 
