@@ -59,3 +59,7 @@ GitHub `main` 已更新到提交 `bea9145052ca24b0f49c217b8ffff64ce77879a1`，�
 
 本地发布门结果：后端公开回归 `164 passed, 5 skipped`，前端 `33 passed`，前端构建通过，Ruff 通过，`git diff --check` 通过，`demo_smoke.py --no-network` 输出 `network_calls=0`，`validate_public_release.py --history` 通过。远程 GitHub Actions `ci` run `34753665238` 的 `verify` job（`103714300691`）已完成并成功；这些结果证明公开工程和数据边界可复核，不代表医学准确率、临床 UAT 或生产批准。
 
+## 2026-09-13 README 二期状态显著化
+
+为避免首页顶部仍像旧版，本次在 README 的公开状态区直接增加“二期交付状态”摘要和[二期交付说明](phase2-delivery.md)入口，保留原有 v1 基线描述和公开/私有边界。远端 `main` 提交为 `da3668ed7f6e27284d9b0a8f3ae93fd89a6cb094`；GitHub Actions `ci` run `34756264613` 的 `verify` job `103721031023` 已成功。
+
