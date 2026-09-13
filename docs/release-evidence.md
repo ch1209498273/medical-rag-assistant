@@ -53,3 +53,9 @@
 
 发布前本地门固定为：`demo_smoke.py --no-network`、公开发布校验（含可达历史）、后端/前端必要回归、构建、Ruff 和 `git diff --check`。推送完成后再追加远程 `main` 提交与 CI 核验结果；在远程核验前不将本地提交表述为 GitHub 已更新。
 
+## 2026-09-13 二期公开展示已同步
+
+GitHub `main` 已更新到提交 `bea9145052ca24b0f49c217b8ffff64ce77879a1`，其父提交为 `45457eec9420d59746907964abc8189f27e3d616`；本机 `git ls-remote origin refs/heads/main` 返回同一 SHA。该次更新使用普通非强制引用移动，没有覆盖远端历史，也没有创建 tag 或 GitHub Release。
+
+本地发布门结果：后端公开回归 `164 passed, 5 skipped`，前端 `33 passed`，前端构建通过，Ruff 通过，`git diff --check` 通过，`demo_smoke.py --no-network` 输出 `network_calls=0`，`validate_public_release.py --history` 通过。远程 GitHub Actions `ci` run `34753665238` 的 `verify` job（`103714300691`）已完成并成功；这些结果证明公开工程和数据边界可复核，不代表医学准确率、临床 UAT 或生产批准。
+
